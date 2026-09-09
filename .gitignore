@@ -10,3 +10,5 @@ __pycache__/
 dashboard/node_modules/
 dashboard/dist/
 .env
+
+dashboard/*.tsbuildinfo
