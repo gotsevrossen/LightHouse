@@ -1,1 +1,1 @@
-"""GUARD's local alert ingestion and AI-triage service."""
+"""LightHouse's local alert ingestion and AI-triage service."""

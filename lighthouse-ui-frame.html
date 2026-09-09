@@ -3,39 +3,891 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>GUARD — Dashboard Frame</title>
+  <title>LightHouse — Dashboard Frame</title>
+  <!-- No web fonts: this page must render identically on an air-gapped appliance,
+       and a blocked font request would otherwise stall first paint. -->
   <style>
-    :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #17241d; background: #f7f8f7; }
-    * { box-sizing: border-box; } body { margin: 0; }
-    .app { display: grid; grid-template-columns: 244px 1fr; min-height: 100vh; }
-    aside { display: flex; flex-direction: column; padding: 25px 14px; color: #d8e3dc; background: #15201b; }
-    .brand { padding: 3px 12px 34px; } .brand b { display: block; color: #b5f4cb; font-size: 1.25rem; letter-spacing: .09em; }
-    .brand span { font-size: .78rem; color: #96aaa0; } nav button { display: block; width: 100%; margin: 2px 0; padding: 12px; border: 0; border-radius: 9px; background: transparent; color: #bed0c6; text-align: left; font: inherit; text-transform: capitalize; cursor: pointer; }
-    nav button.active, nav button:hover { color: white; background: #294137; }.bottom { margin-top: auto; padding-top: 14px; border-top: 1px solid #32463c; }
-    main { width: min(1100px, 100%); padding: 54px 64px; position:relative;clip-path:inset(0); }.eyebrow { margin: 0 0 8px; color: #438765; font-size: .7rem; font-weight: 800; letter-spacing: .13em; }
-    h1 { margin: 0 0 12px; font-size: clamp(2rem, 4vw, 3.2rem); letter-spacing: -.045em; } p { line-height: 1.55; }.muted, small { color: #718078; }
-    .welcome { padding-bottom: 28px; border-bottom: 1px solid #dce3df; }.welcome > p:not(.eyebrow) { max-width: 610px; color: #53625a; }.health { display: flex; align-items: center; gap: 9px; margin-top: 22px; }.health i, .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #4fb77a; }.health small { margin-left: 5px; }
-    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 27px 0; }.cards > div, .panel { padding: 21px; border: 1px solid #e2e8e4; border-radius: 14px; background: white; box-shadow: 0 3px 12px #19312408; }.cards small { display: block; font-size: .68rem; font-weight: 800; letter-spacing: .09em; }.cards strong { display: block; margin: 9px 0; color: #193d2a; font-size: 1.85rem; }.cards p { margin: 5px 0; font-size: .86rem; }
-    .recent { margin-top: 35px; } article { display: flex; gap: 13px; padding: 17px 4px; border-bottom: 1px solid #e0e6e2; cursor: pointer; } article p { margin: 4px 0; color: #64736b; font-size: .9rem; } article small { margin-left: auto; text-align: right; }.dot.medium { background: #d8a940; }.dot.high { background: #df634e; }
-    .chat { position: sticky; bottom: 16px; margin-top: 24px; padding-top: 12px; background: #f7f8f7; isolation:isolate;z-index:2;box-shadow:0 100vh 0 100vh #f7f8f7; }.chat::before{content:"";position:absolute;z-index:-1;top:-72px;left:0;right:0;height:73px;background:linear-gradient(to bottom,transparent,#f7f8f7 88%);pointer-events:none}.chat form { display: flex; gap: 8px; padding: 8px; border: 1px solid #d5ded8; border-radius: 14px; background: white; }.chat textarea { flex: 1; padding: 11px; border: 0; outline: 0; resize: none; font: inherit; }.chat form button { width: 39px; height: 39px; border: 0; border-radius: 9px; background: #1d6844; color: white; font-size: 1.2rem; cursor: pointer; }.chat small { padding-left: 10px; font-size: .72rem; }.prompt-cards{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin:14px 0}.prompt-cards button{position:relative;min-height:82px;padding:17px 40px 17px 17px;border:1px solid #e2e8e4;border-radius:14px;background:#fff;color:#17241d;text-align:left;font:inherit;font-weight:650;box-shadow:0 3px 12px #19312408;cursor:pointer}.prompt-cards button b{position:absolute;top:13px;right:14px;color:#438765;font-size:1rem}
-    .nav-icon{display:inline-grid;width:24px;place-items:center;margin-right:9px;font-size:1.1rem;font-weight:700}.collapse{position:absolute;right:10px;top:4px;width:30px;height:30px;border:0;border-radius:7px;background:transparent;color:#b5f4cb;cursor:pointer}.brand{position:relative}.app{transition:grid-template-columns .18s ease}.app>aside{position:sticky;top:0;height:100vh;align-self:start}.app.collapsed{grid-template-columns:68px 1fr}.app.collapsed aside{padding-left:9px;padding-right:9px}.app.collapsed .brand{height:42px;padding:3px 0}.app.collapsed .brand b,.app.collapsed .brand span,.app.collapsed .nav-label{display:none}.app.collapsed .collapse{position:static;display:block;margin:auto;background:#294137}.app.collapsed nav button{display:grid;place-items:center;padding:12px}.app.collapsed .nav-icon{margin:0}@media (max-width: 720px) { .app,.app.collapsed { grid-template-columns: 1fr; } .app>aside { min-height: auto;height:auto;align-self:auto;padding: 14px; flex-direction: row; align-items: center; overflow: auto; } .brand { padding: 0 8px; } .brand span { display: none; } aside nav { display: flex; } nav button,.app.collapsed nav button { display:block;width: auto; white-space: nowrap; } .bottom { margin: 0 0 0 auto; padding: 0; border: 0; } .bottom button:last-child { display: none; } main { padding: 30px 20px; } .cards { grid-template-columns: 1fr; } article small { display: none; }.collapse{display:none} }
-    .chat textarea{field-sizing:content;max-height:33vh;overflow-y:auto}
+    /* ---- LightHouse brand tokens ---- */
+    :root{
+      --green:#2A9679; --green-dark:#217a61; --green-deep:#186049;
+      --ink:#000; --paper:#fff; --ground:#E9E9E9;
+      --line:rgba(0,0,0,.18); --muted:#4b524f;
+      /* severity: same muted weight as the brand green, validated for colour-vision
+         deficiency (deutan dE 8.9), normal vision (16.7) and 3:1 on white.
+         Always paired with a text label - never colour alone. */
+      --sev-low:#2A9679; --sev-med:#C08A1E; --sev-high:#BF4536;
+      --r-lg:40px; --r-md:24px; --r-sm:14px;
+      font-family:system-ui, -apple-system, "Segoe UI", Roboto, ui-sans-serif, "Helvetica Neue", Arial, sans-serif;
+      color:var(--ink); background:var(--ground);
+    }
+    *{box-sizing:border-box} body{margin:0;background:var(--ground)}
+    /* the shell itself never scrolls, so the lapped corners stay put */
+    .app{display:grid;grid-template-columns:300px 1fr;height:100vh;overflow:hidden;
+      transition:grid-template-columns .18s ease}
+
+    /* ---- Sidebar: flat green panel; the content sheet laps over it ---- */
+    aside{height:100vh;display:flex;flex-direction:column;
+      /* right padding clears the content sheet that laps over this edge */
+      padding:22px 56px 28px 20px;color:#eafff6;background:var(--green)}
+    /* the toggle wears a nav item's shape, size and hover, and its glyph sits on the
+       same 45px centre line as the nav icons, so it reads as part of that column */
+    .rail-top{display:flex;justify-content:flex-start;padding-left:3px;margin-bottom:4px}
+    .collapse{display:grid;place-items:center;width:44px;height:44px;border:0;
+      border-radius:var(--r-sm);background:transparent;color:#d8f3e9;
+      font-size:1.05rem;font-weight:700;line-height:1;cursor:pointer;
+      transition:background .15s ease,color .15s ease}
+    .collapse:hover{background:rgba(255,255,255,.14);color:#fff}
+    .brand{display:flex;align-items:center;gap:13px;padding:0 4px 28px}
+    .brand img{flex:0 0 auto;width:64px;height:64px;border-radius:50%;background:#fff;
+      object-fit:cover;transition:width .18s ease,height .18s ease}
+    .brand .txt{min-width:0}
+    .brand b{display:block;color:#fff;font-size:1.15rem;font-weight:700;letter-spacing:-.01em;line-height:1.1}
+    .brand span{display:block;font-size:.7rem;font-weight:400;letter-spacing:.02em;color:#cdeee2}
+
+    nav button{display:flex;align-items:center;width:100%;margin:3px 0;padding:12px 14px;border:0;
+      border-radius:var(--r-sm);background:transparent;color:#d8f3e9;text-align:left;font:inherit;
+      font-size:.9rem;font-weight:500;cursor:pointer;transition:background .15s ease,color .15s ease}
+    nav button:hover{background:rgba(255,255,255,.14);color:#fff}
+    nav button.active{background:#fff;color:var(--green-deep);font-weight:600}
+    .nav-icon{display:inline-grid;width:22px;place-items:center;margin-right:11px;font-size:1.05rem;font-weight:700}
+    .bottom{margin-top:auto;padding-top:14px;border-top:1px solid rgba(255,255,255,.28)}
+
+    /* ---- Main: the sheet laps over the sidebar. Only .sheet scrolls, so the
+           rounded left edge and the composer below it never move ---- */
+    main{width:auto;margin-left:calc(var(--r-lg) * -1);
+      height:100vh;display:grid;grid-template-rows:1fr auto;overflow:hidden;
+      position:relative;z-index:1;background:var(--ground);
+      border-radius:var(--r-lg) 0 0 var(--r-lg);
+      clip-path:inset(0 round var(--r-lg) 0 0 var(--r-lg))}
+    /* main fills the column so its scrollbar sits at the far right; the content is
+       capped and centred inside, so collapsing the rail does not shift it left */
+    .sheet{min-height:0;overflow-y:auto;overscroll-behavior:contain;
+      padding:56px 88px 28px 96px}
+    .sheet>*,.dock form,.dock small{max-width:1020px;margin-left:auto;margin-right:auto}
+    .eyebrow{margin:0 0 10px;color:var(--ink);font-size:.68rem;font-weight:600;letter-spacing:.16em;text-transform:uppercase}
+    h1{margin:0 0 14px;font-size:clamp(2.2rem,4.4vw,3.6rem);font-weight:800;line-height:.98;
+      letter-spacing:-.035em;text-transform:uppercase}
+    h2{margin:0 0 4px;font-size:1.5rem;font-weight:700;letter-spacing:-.02em}
+    h3{margin:26px 0 8px;font-size:.95rem;font-weight:600;letter-spacing:-.01em}
+    p{line-height:1.55}
+    .muted,small{color:var(--muted)}
+    .page{display:none}
+    .page.on{display:block}
+    .lede{max-width:620px;color:var(--muted);margin:0 0 4px}
+
+    .welcome{padding-bottom:26px;border-bottom:1px solid var(--line)}
+    .welcome>p:not(.eyebrow){max-width:620px;color:var(--muted)}
+    .health{display:flex;align-items:center;gap:10px;margin-top:20px;font-size:.95rem}
+    .health i,.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--green)}
+    .health i.warn{background:var(--sev-high)}
+    .health small{margin-left:6px}
+
+    .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:28px 0}
+    .cards>div,.panel{padding:24px;border:0;border-radius:var(--r-md);background:var(--paper)}
+    .cards.lead>div:first-child{background:var(--green);color:#fff}
+    .cards.lead>div:first-child small,.cards.lead>div:first-child strong,.cards.lead>div:first-child p{color:#fff}
+    .cards small{display:block;font-size:.64rem;font-weight:600;letter-spacing:.14em;text-transform:uppercase}
+    .cards strong{display:block;margin:12px 0 6px;font-size:2.4rem;font-weight:800;letter-spacing:-.04em;line-height:1}
+    .cards p{margin:0;font-size:.84rem;color:var(--muted)}
+    .panel{margin-top:16px}
+    .panel h3:first-child{margin-top:0}
+
+    .recent{margin-top:38px}
+    .recent .head{padding-bottom:12px;border-bottom:1px solid var(--line)}
+    /* an alert is a native details element, so it opens without script and stays
+       keyboard-operable. the closed row keeps the metrics of the old static row. */
+    .alert{border-bottom:1px solid var(--line)}
+    .alert summary{display:flex;align-items:flex-start;gap:14px;padding:18px 6px;cursor:pointer;
+      list-style:none;border-radius:var(--r-sm);transition:background .15s ease}
+    .alert summary::-webkit-details-marker{display:none}
+    .alert summary:hover{background:rgba(255,255,255,.6)}
+    /* an open alert becomes one white card, summary and detail together */
+    .alert[open]{border-bottom-color:transparent;background:var(--paper);border-radius:var(--r-md);margin:6px 0}
+    .alert[open] summary{background:transparent;padding:22px 22px 10px}
+    .alert summary b{display:block;font-weight:600}
+    .alert summary p{margin:4px 0 0;color:var(--muted);font-size:.88rem}
+    .alert .when{margin-left:auto;padding-left:16px;text-align:right;white-space:nowrap;font-size:.78rem;color:var(--muted)}
+    .alert .chev{flex:0 0 auto;width:18px;margin:3px 0 0 12px;text-align:center;color:var(--muted);
+      font-size:.8rem;line-height:1;transition:transform .18s ease}
+    .alert[open] .chev{transform:rotate(180deg)}
+    .detail{padding:0 22px 24px 54px;max-width:72ch}
+    .detail .eyebrow{margin:20px 0 8px}
+    .detail>p{margin:0;font-size:.9rem;line-height:1.6;color:var(--muted)}
+    .detail ol{margin:0;padding-left:20px}
+    .detail li{margin:9px 0;font-size:.9rem;line-height:1.6;color:var(--muted)}
+    .detail li b{font-weight:600;color:var(--ink)}
+    .actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}
+    .ai-note{margin-top:18px;font-size:.72rem;color:var(--muted)}
+
+    .dot{margin-top:7px}
+    .dot.low{background:var(--sev-low)}
+    .dot.medium{background:var(--sev-med)}
+    .dot.high{background:var(--sev-high)}
+    /* severity always carries its name, so colour is never the only signal */
+    .sev{display:inline-block;margin-right:8px;font-size:.68rem;font-weight:600;
+      letter-spacing:.1em;text-transform:uppercase;color:var(--sev-low)}
+    .sev.medium{color:#8a6314} .sev.high{color:#96342a}
+    .pill{display:inline-block;padding:4px 11px;border-radius:999px;background:rgba(0,0,0,.07);
+      font-size:.68rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+    .chips{display:flex;gap:8px;margin:18px 0 4px;flex-wrap:wrap}
+    .chips button{padding:8px 16px;border:1px solid var(--line);border-radius:999px;background:transparent;
+      color:var(--ink);font:inherit;font-size:.8rem;font-weight:500;cursor:pointer}
+    .chips button.on{background:var(--ink);border-color:var(--ink);color:#fff}
+
+    /* ---- Prompt cards: arrow motif from the slides ---- */
+    .common-questions{margin-top:38px}
+    .prompt-cards{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin:16px 0 0}
+    .prompt-cards button{position:relative;min-height:96px;padding:20px 52px 20px 20px;border:0;
+      border-radius:var(--r-md);background:var(--paper);color:var(--ink);text-align:left;font:inherit;
+      font-size:.95rem;font-weight:500;cursor:pointer;transition:background .15s ease,color .15s ease}
+    .prompt-cards button:hover{background:var(--green);color:#fff}
+    .prompt-cards button b{position:absolute;top:16px;right:18px;color:var(--green);font-size:1.1rem;font-weight:400}
+    .prompt-cards button:hover b{color:#fff}
+
+    /* ---- Skeleton shown while a page's data has not arrived ---- */
+    .sk{display:block;border-radius:8px;
+      background:linear-gradient(90deg,rgba(0,0,0,.055) 25%,rgba(0,0,0,.10) 37%,rgba(0,0,0,.055) 63%);
+      background-size:400% 100%;animation:shimmer .7s ease infinite}
+    @keyframes shimmer{from{background-position:100% 0}to{background-position:0 0}}
+    main.loading .pages{display:none}
+    main:not(.loading) .sk-screen{display:none}
+    .sk-eyebrow{width:120px;height:11px;margin-bottom:18px}
+    .sk-title{width:min(460px,60%);height:46px;margin-bottom:12px}
+    .sk-title.two{width:min(340px,45%);margin-bottom:30px}
+    .sk-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:28px 0}
+    .sk-card{height:142px;border-radius:var(--r-md)}
+    .sk-rows{margin-top:34px;border-top:1px solid var(--line)}
+    .sk-row{display:flex;align-items:flex-start;gap:14px;padding:20px 6px;border-bottom:1px solid var(--line)}
+    .sk-dot{width:10px;height:10px;margin-top:6px;border-radius:50%;flex:0 0 auto}
+    .sk-row div{flex:1}
+    .sk-line{height:12px;margin-bottom:9px}
+    .sk-line:last-child{margin-bottom:0}
+    .w30{width:30%} .w55{width:55%} .w70{width:70%} .w12{width:82px}
+
+    /* ---- Chart: stacked bars, one column per day ---- */
+    .chart{margin-top:22px;padding:26px 24px 18px;border-radius:var(--r-md);background:var(--paper)}
+    .legend{display:flex;gap:18px;margin-bottom:22px;font-size:.78rem;color:var(--muted)}
+    .legend span{display:inline-flex;align-items:center;gap:7px}
+    .legend i{width:10px;height:10px;border-radius:3px;background:var(--sev-low)}
+    .legend .m i{background:var(--sev-med)} .legend .h i{background:var(--sev-high)}
+    .plot{position:relative;display:grid;grid-template-columns:repeat(7,1fr);gap:18px;
+      height:200px;padding-left:30px;border-bottom:1px solid var(--line)}
+    .grid{position:absolute;left:30px;right:0;top:0;bottom:0;pointer-events:none}
+    .grid i{position:absolute;left:0;right:0;height:1px;background:rgba(0,0,0,.08)}
+    .grid b{position:absolute;left:-30px;font-size:.68rem;font-weight:400;color:var(--muted);
+      transform:translateY(-50%)}
+    .col{position:relative;display:flex;flex-direction:column;justify-content:flex-end;align-items:center}
+    .col>span{position:relative;width:100%;max-width:46px;background:var(--sev-low)}
+    .col>span+span{margin-top:2px} /* 2px surface gap between stacked fills; the bottom fill stays on the axis */
+    .col>span.m{background:var(--sev-med)} .col>span.h{background:var(--sev-high)}
+    .col>span:first-child{border-radius:4px 4px 0 0} /* rounded data-end, baseline stays square */
+    .col>span:hover{outline:2px solid var(--paper);outline-offset:-1px}
+    .col>span em{position:absolute;bottom:calc(100% + 8px);left:50%;translate:-50% 0;padding:6px 10px;
+      border-radius:8px;background:var(--ink);color:#fff;font-style:normal;font-size:.72rem;
+      white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .12s ease;z-index:3}
+    .col>span:hover em{opacity:1}
+    .xaxis{display:grid;grid-template-columns:repeat(7,1fr);gap:18px;padding-left:30px;margin-top:10px;
+      font-size:.72rem;color:var(--muted);text-align:center}
+    details.table{margin-top:18px;font-size:.82rem}
+    details.table summary{cursor:pointer;color:var(--muted)}
+    details.table table{width:100%;margin-top:12px;border-collapse:collapse}
+    details.table th,details.table td{padding:7px 10px;text-align:left;border-bottom:1px solid var(--line)}
+    details.table th{font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600}
+
+    /* ---- Tables and settings rows ---- */
+    table.list{width:100%;border-collapse:collapse;margin-top:8px}
+    table.list th,table.list td{padding:13px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:.88rem}
+    table.list th{font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600}
+    table.list td b{font-weight:600}
+    pre.evidence{margin:8px 0 0;padding:18px;border-radius:var(--r-sm);background:#12211b;color:#cfe9df;
+      font-size:.78rem;line-height:1.6;overflow-x:auto}
+    .field{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 0;
+      border-bottom:1px solid var(--line)}
+    .field:last-child{border-bottom:0}
+    .field b{font-weight:600}
+    .field p{margin:3px 0 0;font-size:.82rem;color:var(--muted);max-width:52ch}
+    .field select,.field input{padding:10px 13px;border:1px solid var(--line);border-radius:10px;
+      background:var(--paper);font:inherit;font-size:.86rem}
+    .btn{padding:11px 20px;border:0;border-radius:999px;background:var(--green);color:#fff;
+      font:inherit;font-size:.84rem;font-weight:600;cursor:pointer;transition:background .15s ease}
+    .btn:hover{background:var(--green-dark)}
+    .btn.quiet{background:transparent;color:var(--ink);border:1px solid var(--line)}
+    .btn.quiet:hover{background:rgba(0,0,0,.06)}
+    .row-end{display:flex;justify-content:flex-end;margin-top:18px}
+
+    /* keyboard focus: visible on every interactive element, both surfaces */
+    :focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+    aside :focus-visible{outline-color:#fff}
+    .alert summary:focus-visible{outline-offset:-2px}
+
+    /* ---- Composer: outside the scroller, so it is genuinely static ---- */
+    .dock{position:relative;padding:0 88px 24px 96px;background:var(--ground)}
+    main:not(.with-dock) .dock{display:none}
+    /* content fades out as it passes behind the composer */
+    .dock::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:40px;
+      background:linear-gradient(to bottom,transparent,var(--ground));pointer-events:none}
+    .dock form{display:flex;align-items:flex-end;gap:10px;padding:10px;border-radius:var(--r-md);background:var(--paper)}
+    .dock textarea{flex:1;padding:12px;border:0;outline:0;resize:none;font:inherit;font-size:.95rem;
+      background:transparent;field-sizing:content;max-height:28vh;overflow-y:auto}
+    .dock form button{flex:0 0 auto;width:42px;height:42px;border:0;border-radius:var(--r-sm);
+      position:relative;background:var(--green);color:#fff;font-size:1.15rem;cursor:pointer;overflow:visible;
+      transition:background .2s ease,transform .2s ease}
+    .dock form button:hover{background:var(--green-dark)}
+    .dock small{display:block;padding:8px 4px 0;font-size:.72rem}
+
+    /* ---- Collapsed sidebar: toggle stays visible so it can be reopened ---- */
+    .app.collapsed{grid-template-columns:130px 1fr}
+    .app.collapsed aside{padding-left:14px;padding-right:54px}
+    .app.collapsed .rail-top{justify-content:center;padding-left:0}
+    .app.collapsed .brand{justify-content:center;padding:0 0 24px}
+    .app.collapsed .brand img{width:52px;height:52px}
+    .app.collapsed .brand .txt,.app.collapsed .nav-label{display:none}
+    .app.collapsed nav button{justify-content:center;padding:12px}
+    .app.collapsed .nav-icon{margin:0}
+
+    /* ---- Boot sequence: plays once per session. The lighthouse rises out of the
+           bottom edge with its stripes rolling like a barber's pole, beams sweep
+           left to right, the light goes out for half a second, then the app ---- */
+    .boot{position:fixed;inset:0;z-index:999;overflow:hidden;background:var(--green);
+      animation:boot-out .225s ease 2.225s forwards}
+    /* rooted to the bottom edge: it only travels straight up and translateY never
+       goes below 0, so the flat base stays planted on the bottom of the screen */
+    .boot-stage{position:absolute;left:50%;bottom:0;translate:-50% 0;
+      height:min(88vh,190vw);aspect-ratio:325/1046;
+      animation:rise .7s cubic-bezier(.2,.75,.3,1) both,lamp-out .79s ease 1.675s forwards}
+    .lh-head{position:absolute;inset:0;display:block;width:100%;height:100%}
+    /* the shaft is a straight-sided cone traced from the logo. the outer shape is
+       filled white and the striped layer is inset 2.6%, so the white left as a rim
+       reads as the tower's side walls, exactly as the logo draws them */
+    .lh-shaft{position:absolute;left:0;right:0;top:33.84%;bottom:0;background:#fff;
+      clip-path:polygon(15.7% 0,0.3% 100%,99.7% 100%,84.3% 0)}
+    .lh-stripes{position:absolute;inset:0;overflow:hidden;
+      clip-path:polygon(18.3% 0,2.9% 100%,97.1% 100%,81.7% 0)}
+    /* soft 0.2vh shoulders on each band so the diagonals do not read as stair-stepped */
+    .lh-stripes span{position:absolute;left:-40%;right:-40%;top:-60%;bottom:-60%;
+      background:repeating-linear-gradient(-25deg,#fff 0 6.3vh,var(--green) 6.5vh 12.6vh,#fff 12.8vh);
+      animation:barber .95s linear infinite}
+    /* one stripe period measured vertically: 12.8vh / cos(25deg) */
+    @keyframes barber{from{transform:translateY(0)}to{transform:translateY(-14.124vh)}}
+    @keyframes rise{
+      from{opacity:0;transform:translateY(100%)}
+      30%{opacity:1}
+      to{opacity:1;transform:translateY(0)}}
+    /* lamp glow, sitting on the lantern */
+    .boot-stage::before{content:"";position:absolute;left:50%;top:23%;width:44vh;height:44vh;
+      translate:-50% -50%;border-radius:50%;z-index:1;
+      background:radial-gradient(circle,rgba(255,255,255,.3),rgba(255,255,255,0) 62%)}
+    /* zero-size anchor on the lantern; every beam pivots from this point */
+    .beams{position:absolute;left:50%;top:23%;width:0;height:0;z-index:2}
+    /* the wrapper carries the fixed angle, the inner element does the animating,
+       so the keyframes only touch opacity and scaleY */
+    .beams i{position:absolute;left:0;bottom:0;width:17vmax;height:100vmax;
+      transform-origin:50% 100%;transform:translateX(-50%) rotate(var(--a))}
+    .beams b{position:absolute;inset:0;transform-origin:50% 100%;opacity:0;filter:blur(4px);
+      background:linear-gradient(to top,rgba(255,255,255,.85),rgba(255,255,255,.38) 40%,rgba(255,255,255,0) 100%);
+      clip-path:polygon(50% 100%,0 0,100% 0);
+      animation:beam 1.01s ease-out both;animation-delay:var(--d)}
+    @keyframes beam{
+      0%{opacity:0;transform:scaleY(.12)}
+      30%{opacity:1}
+      100%{opacity:0;transform:scaleY(1)}}
+    @keyframes lamp-out{to{opacity:0}}
+    @keyframes boot-out{to{opacity:0;visibility:hidden}}
+    .app{animation:app-in .25s ease 2.25s both}
+    @keyframes app-in{from{opacity:0}to{opacity:1}}
+    /* already booted this session: straight to the app, no green screen */
+    html.booted .boot{display:none}
+    html.booted .app{animation:none}
+
+    @media (prefers-reduced-motion:reduce){
+      .boot{display:none}
+      .app,.boot-stage,.beams b,.lh-stripes span,.sk{animation:none}
+    }
+
+    @media (max-width:720px){
+      .app,.app.collapsed{grid-template-columns:1fr;height:auto;overflow:visible}
+      .app>aside,.app.collapsed>aside{height:auto;padding:14px 14px 54px;
+        flex-direction:row;align-items:center;overflow:auto}
+      .rail-top{display:none}
+      .brand,.app.collapsed .brand{padding:0 10px 0 4px}
+      .brand img,.app.collapsed .brand img{width:44px;height:44px}
+      .brand span{display:none}
+      aside nav{display:flex}
+      nav button,.app.collapsed nav button{display:block;width:auto;white-space:nowrap}
+      .bottom{margin:0 0 0 auto;padding:0;border:0}
+      .bottom button:last-child{display:none}
+      main{height:auto;overflow:visible;display:block;margin:calc(var(--r-lg) * -1) 0 0;
+        border-radius:var(--r-lg) var(--r-lg) 0 0;
+        clip-path:inset(0 round var(--r-lg) var(--r-lg) 0 0)}
+      .sheet{overflow:visible;padding:44px 20px 20px}
+      .sheet>*,.dock form,.dock small{max-width:none}
+      .dock{position:sticky;bottom:0;padding:0 20px 16px}
+      .cards,.prompt-cards,.sk-cards{grid-template-columns:1fr}
+      .alert .when{display:none}
+      .detail{padding-left:6px}
+    }
   </style>
+  <script>
+    // decided before first paint so the green screen never flashes on a revisit
+    try { if (sessionStorage.getItem('lh-booted')) document.documentElement.className = 'booted'; } catch (e) {}
+  </script>
 </head>
 <body>
+  <div class="boot" id="boot" aria-hidden="true">
+    <div class="boot-stage">
+      <img class="lh-head" src="assets/lighthouse-head.png" alt="" />
+      <div class="lh-shaft"><div class="lh-stripes"><span></span></div></div>
+      <div class="beams">
+        <i style="--a:-80deg;--d:.75s"><b></b></i>
+        <i style="--a:-53deg;--d:.85s"><b></b></i>
+        <i style="--a:-27deg;--d:.95s"><b></b></i>
+        <i style="--a:0deg;--d:1.05s"><b></b></i>
+        <i style="--a:27deg;--d:1.15s"><b></b></i>
+        <i style="--a:53deg;--d:1.25s"><b></b></i>
+        <i style="--a:80deg;--d:1.35s"><b></b></i>
+      </div>
+    </div>
+  </div>
+
   <div class="app">
     <aside>
-      <div class="brand"><b>GUARD</b><span>Local security copilot</span><button class="collapse" title="Collapse sidebar">☰</button></div>
-      <nav><button class="active"><span class="nav-icon">⌂</span><span class="nav-label">Home</span></button><button><span class="nav-icon">!</span><span class="nav-label">Alerts</span></button><button><span class="nav-icon">↗</span><span class="nav-label">Trends</span></button><button><span class="nav-icon">⌘</span><span class="nav-label">Advanced analytics</span></button></nav>
-      <nav class="bottom"><button><span class="nav-icon">⚙</span><span class="nav-label">Settings</span></button><button><span class="nav-icon">♙</span><span class="nav-label">Admin</span></button><button><span class="nav-icon">⇥</span><span class="nav-label">Sign out</span></button></nav>
+      <div class="rail-top">
+        <button class="collapse" title="Collapse sidebar" aria-expanded="true">&#9776;</button>
+      </div>
+      <div class="brand">
+        <img src="assets/lighthouse-logo.png" alt="LightHouse" />
+        <span class="txt"><b>LightHouse</b><span>Guiding You to Safer Shores</span></span>
+      </div>
+      <nav>
+        <button class="active" data-page="home"><span class="nav-icon">⌂</span><span class="nav-label">Home</span></button>
+        <button data-page="alerts"><span class="nav-icon">!</span><span class="nav-label">Alerts</span></button>
+        <button data-page="trends"><span class="nav-icon">↗</span><span class="nav-label">Trends</span></button>
+        <button data-page="advanced"><span class="nav-icon">⌘</span><span class="nav-label">Advanced analytics</span></button>
+      </nav>
+      <nav class="bottom">
+        <button data-page="settings"><span class="nav-icon">⚙</span><span class="nav-label">Settings</span></button>
+        <button data-page="admin"><span class="nav-icon">♙</span><span class="nav-label">Admin</span></button>
+        <button><span class="nav-icon">⇥</span><span class="nav-label">Sign out</span></button>
+      </nav>
     </aside>
-    <main>
-      <section class="welcome"><p class="eyebrow">NETWORK OVERVIEW</p><h1>Your network looks healthy</h1><div class="health"><i></i><b>Monitoring active</b><small>2 open alerts</small></div></section>
-      <section class="cards"><div><small>HEALTH STATUS</small><strong>Good</strong><p>Monitoring sources are ready to report.</p></div><div><small>OPEN ALERTS</small><strong>2</strong><p>Items that have not been resolved.</p></div><div><small>HIGH PRIORITY</small><strong>0</strong><p>Potentially urgent activity.</p></div></section>
-      <section class="recent"><p class="eyebrow">RECENT ACTIVITY</p><h2>Latest alerts</h2><article><span class="dot medium"></span><div><b>Unusual DNS activity detected</b><p>A device made an unusual request. Review the device if this repeats.</p></div><small>Today, 10:42 AM</small></article><article><span class="dot"></span><div><b>New device joined the network</b><p>A new device was observed. Confirm that it belongs to your business.</p></div><small>Today, 9:18 AM</small></article></section>
-      <section class="common-questions"><p class="eyebrow">COMMON QUESTIONS</p><div class="prompt-cards"><button>Summarize my network and security status <b>↗</b></button><button>Explain what my most recent alert means <b>↗</b></button><button>What should I address first? <b>↗</b></button><button>Are there any unusual devices on my network? <b>↗</b></button></div></section><section class="chat"><form><textarea rows="1" placeholder="Ask GUARD about your network…"></textarea><button type="button">↑</button></form><small>GUARD chat stays on this appliance.</small></section>
+
+    <main class="with-dock loading">
+      <div class="sheet">
+
+      <!-- shown until the page's data arrives -->
+      <div class="sk-screen" aria-hidden="true">
+        <span class="sk sk-eyebrow"></span>
+        <span class="sk sk-title"></span>
+        <span class="sk sk-title two"></span>
+        <div class="sk-cards">
+          <span class="sk sk-card"></span><span class="sk sk-card"></span><span class="sk sk-card"></span>
+        </div>
+        <div class="sk-rows">
+          <div class="sk-row"><span class="sk sk-dot"></span><div><span class="sk sk-line w30"></span><span class="sk sk-line w70"></span></div><span class="sk sk-line w12"></span></div>
+          <div class="sk-row"><span class="sk sk-dot"></span><div><span class="sk sk-line w55"></span><span class="sk sk-line w70"></span></div><span class="sk sk-line w12"></span></div>
+          <div class="sk-row"><span class="sk sk-dot"></span><div><span class="sk sk-line w30"></span><span class="sk sk-line w55"></span></div><span class="sk sk-line w12"></span></div>
+          <div class="sk-row"><span class="sk sk-dot"></span><div><span class="sk sk-line w55"></span><span class="sk sk-line w70"></span></div><span class="sk sk-line w12"></span></div>
+        </div>
+      </div>
+
+      <div class="pages">
+      <!-- ===================== HOME ===================== -->
+      <div class="page on" id="page-home">
+        <section class="welcome">
+          <p class="eyebrow">Network overview</p>
+          <h1>1 item deserves<br>your attention</h1>
+          <div class="health"><i class="warn"></i><b>Attention needed</b><small>2 open alerts</small></div>
+        </section>
+        <section class="cards lead">
+          <div><small>Health status</small><strong>Review alerts</strong><p>Monitoring sources are ready to report.</p></div>
+          <div><small>Open alerts</small><strong>2</strong><p>Items that have not been resolved.</p></div>
+          <div><small>High priority</small><strong>1</strong><p>Potentially urgent activity.</p></div>
+        </section>
+        <section class="recent">
+          <div class="head"><p class="eyebrow">Recent activity</p><h2>Latest alerts</h2></div>
+          <details class="alert">
+            <summary>
+              <span class="dot high"></span>
+              <div><span class="sev high">High</span><b>Repeated failed logins from one address</b>
+                <p>14 failed sign-ins to the file server in four minutes, all from 10.0.4.66.</p></div>
+              <span class="when">Today, 11:07 AM</span><span class="chev">&#9662;</span>
+            </summary>
+            <div class="detail">
+              <p class="eyebrow">What this means</p>
+              <p>Fourteen sign-in attempts failed against one server inside four minutes, from an address
+                that has never held a successful session. That rate and that pattern look like someone
+                working through a list of passwords, not a person mistyping their own.</p>
+              <p class="eyebrow">Recommended steps</p>
+              <ol>
+                <li><b>Block 10.0.4.66 first.</b> Drop it at the firewall, or unplug the device if it sits on your own network. This stops the attempts while you look into it.</li>
+                <li><b>Work out what the device is.</b> It is not in your known-device list. Your router DHCP table will show the lease, and the switch will show which port it is on.</li>
+                <li><b>Reset the password on any account it targeted</b> and turn on lockout after five failed attempts, so a run like this stops itself next time.</li>
+                <li><b>Check whether anything succeeded</b> from that address before the failures began. If it did, treat that account as compromised.</li>
+              </ol>
+              <div class="actions">
+                <button class="btn">Mark resolved</button>
+                <button class="btn quiet">Dismiss</button>
+                <button class="btn quiet">Ask LightHouse about this</button>
+              </div>
+              <p class="ai-note">Written on this appliance by qwen3:8b and checked against the alert schema. Nothing left your network.</p>
+            </div>
+          </details>
+          <details class="alert">
+            <summary>
+              <span class="dot medium"></span>
+              <div><span class="sev medium">Medium</span><b>Unusual DNS activity detected</b>
+                <p>A device made an unusual request. Review the device if this repeats.</p></div>
+              <span class="when">Today, 10:42 AM</span><span class="chev">&#9662;</span>
+            </summary>
+            <div class="detail">
+              <p class="eyebrow">What this means</p>
+              <p>front-desk-pc asked for 214 different subdomains of a single domain in three minutes.
+                That shape of traffic is one way data gets smuggled out over DNS, but ad blockers,
+                antivirus updaters and content networks produce it too. One burst on its own is usually harmless.</p>
+              <p class="eyebrow">Recommended steps</p>
+              <ol>
+                <li><b>Find out who was on front-desk-pc at 10:42</b> and what they were doing. That often answers it outright.</li>
+                <li><b>Run a malware scan</b> on that device before you clear the alert.</li>
+                <li><b>If the domain means nothing to you</b>, block it at your DNS resolver and see whether anything on the machine breaks.</li>
+                <li><b>Give it 24 hours.</b> A single burst is noise; the same pattern returning daily is worth escalating.</li>
+              </ol>
+              <div class="actions">
+                <button class="btn">Mark resolved</button>
+                <button class="btn quiet">Dismiss</button>
+                <button class="btn quiet">Ask LightHouse about this</button>
+              </div>
+              <p class="ai-note">Written on this appliance by qwen3:8b and checked against the alert schema. Nothing left your network.</p>
+            </div>
+          </details>
+          <details class="alert">
+            <summary>
+              <span class="dot low"></span>
+              <div><span class="sev">Low</span><b>New device joined the network</b>
+                <p>A new device was observed. Confirm that it belongs to your business.</p></div>
+              <span class="when">Today, 9:18 AM</span><span class="chev">&#9662;</span>
+            </summary>
+            <div class="detail">
+              <p class="eyebrow">What this means</p>
+              <p>A device with a hardware address LightHouse has not seen before took an address on your
+                network. Most of the time this is a phone, a laptop or a printer being switched on.</p>
+              <p class="eyebrow">Recommended steps</p>
+              <ol>
+                <li><b>Match the hardware address to something you recognise.</b> The first half of it names the manufacturer, which is usually enough.</li>
+                <li><b>If it is yours, give it a name</b> so future alerts read clearly instead of showing a number.</li>
+                <li><b>If it is not yours</b>, remove it from the network and change the Wi-Fi password. Anything that reconnects afterwards is worth a second look.</li>
+              </ol>
+              <div class="actions">
+                <button class="btn quiet">Reopen</button>
+                <button class="btn quiet">Ask LightHouse about this</button>
+              </div>
+              <p class="ai-note">Written on this appliance by qwen3:8b and checked against the alert schema. Nothing left your network.</p>
+            </div>
+          </details>
+        </section>
+        <section class="common-questions">
+          <p class="eyebrow">Common questions</p>
+          <div class="prompt-cards">
+            <button>Summarize my network and security status <b>↗</b></button>
+            <button>Explain what my most recent alert means <b>↗</b></button>
+            <button>What should I address first? <b>↗</b></button>
+            <button>Are there any unusual devices on my network? <b>↗</b></button>
+          </div>
+        </section>
+      </div>
+
+      <!-- ===================== ALERTS ===================== -->
+      <div class="page" id="page-alerts">
+        <p class="eyebrow">Alerts</p>
+        <h1>Security<br>activity</h1>
+        <p class="lede">Open an alert for a plain-English explanation and the steps LightHouse suggests.</p>
+        <div class="chips">
+          <button class="on">All 6</button><button>Open 2</button><button>Resolved 3</button><button>Dismissed 1</button>
+        </div>
+        <section class="recent">
+          <details class="alert">
+            <summary>
+              <span class="dot high"></span>
+              <div><span class="sev high">High</span><span class="pill">Open</span>
+                <b>Repeated failed logins from one address</b>
+                <p>14 failed sign-ins to the file server in four minutes, all from 10.0.4.66.</p></div>
+              <span class="when">Today, 11:07 AM</span><span class="chev">&#9662;</span>
+            </summary>
+            <div class="detail">
+              <p class="eyebrow">What this means</p>
+              <p>Fourteen sign-in attempts failed against one server inside four minutes, from an address
+                that has never held a successful session. That rate and that pattern look like someone
+                working through a list of passwords, not a person mistyping their own.</p>
+              <p class="eyebrow">Recommended steps</p>
+              <ol>
+                <li><b>Block 10.0.4.66 first.</b> Drop it at the firewall, or unplug the device if it sits on your own network. This stops the attempts while you look into it.</li>
+                <li><b>Work out what the device is.</b> It is not in your known-device list. Your router DHCP table will show the lease, and the switch will show which port it is on.</li>
+                <li><b>Reset the password on any account it targeted</b> and turn on lockout after five failed attempts, so a run like this stops itself next time.</li>
+                <li><b>Check whether anything succeeded</b> from that address before the failures began. If it did, treat that account as compromised.</li>
+              </ol>
+              <div class="actions">
+                <button class="btn">Mark resolved</button>
+                <button class="btn quiet">Dismiss</button>
+                <button class="btn quiet">Ask LightHouse about this</button>
+              </div>
+              <p class="ai-note">Written on this appliance by qwen3:8b and checked against the alert schema. Nothing left your network.</p>
+            </div>
+          </details>
+          <details class="alert">
+            <summary>
+              <span class="dot medium"></span>
+              <div><span class="sev medium">Medium</span><span class="pill">Open</span>
+                <b>Unusual DNS activity detected</b>
+                <p>A device made an unusual request. Review the device if this repeats.</p></div>
+              <span class="when">Today, 10:42 AM</span><span class="chev">&#9662;</span>
+            </summary>
+            <div class="detail">
+              <p class="eyebrow">What this means</p>
+              <p>front-desk-pc asked for 214 different subdomains of a single domain in three minutes.
+                That shape of traffic is one way data gets smuggled out over DNS, but ad blockers,
+                antivirus updaters and content networks produce it too. One burst on its own is usually harmless.</p>
+              <p class="eyebrow">Recommended steps</p>
+              <ol>
+                <li><b>Find out who was on front-desk-pc at 10:42</b> and what they were doing. That often answers it outright.</li>
+                <li><b>Run a malware scan</b> on that device before you clear the alert.</li>
+                <li><b>If the domain means nothing to you</b>, block it at your DNS resolver and see whether anything on the machine breaks.</li>
+                <li><b>Give it 24 hours.</b> A single burst is noise; the same pattern returning daily is worth escalating.</li>
+              </ol>
+              <div class="actions">
+                <button class="btn">Mark resolved</button>
+                <button class="btn quiet">Dismiss</button>
+                <button class="btn quiet">Ask LightHouse about this</button>
+              </div>
+              <p class="ai-note">Written on this appliance by qwen3:8b and checked against the alert schema. Nothing left your network.</p>
+            </div>
+          </details>
+          <details class="alert">
+            <summary>
+              <span class="dot low"></span>
+              <div><span class="sev">Low</span><span class="pill">Resolved</span>
+                <b>New device joined the network</b>
+                <p>A new device was observed. Confirm that it belongs to your business.</p></div>
+              <span class="when">Today, 9:18 AM</span><span class="chev">&#9662;</span>
+            </summary>
+            <div class="detail">
+              <p class="eyebrow">What this means</p>
+              <p>A device with a hardware address LightHouse has not seen before took an address on your
+                network. Most of the time this is a phone, a laptop or a printer being switched on.</p>
+              <p class="eyebrow">Recommended steps</p>
+              <ol>
+                <li><b>Match the hardware address to something you recognise.</b> The first half of it names the manufacturer, which is usually enough.</li>
+                <li><b>If it is yours, give it a name</b> so future alerts read clearly instead of showing a number.</li>
+                <li><b>If it is not yours</b>, remove it from the network and change the Wi-Fi password. Anything that reconnects afterwards is worth a second look.</li>
+              </ol>
+              <div class="actions">
+                <button class="btn quiet">Reopen</button>
+                <button class="btn quiet">Ask LightHouse about this</button>
+              </div>
+              <p class="ai-note">Written on this appliance by qwen3:8b and checked against the alert schema. Nothing left your network.</p>
+            </div>
+          </details>
+          <details class="alert">
+            <summary>
+              <span class="dot medium"></span>
+              <div><span class="sev medium">Medium</span><span class="pill">Resolved</span>
+                <b>Port scan against the front desk PC</b>
+                <p>A device swept 1,024 ports in under a minute. Blocked at the firewall.</p></div>
+              <span class="when">Yesterday, 4:51 PM</span><span class="chev">&#9662;</span>
+            </summary>
+            <div class="detail">
+              <p class="eyebrow">What this means</p>
+              <p>Something checked a thousand doors on that machine to see which ones open. The firewall
+                refused all of them, so nothing was reached. What matters now is where the scan came from.</p>
+              <p class="eyebrow">Recommended steps</p>
+              <ol>
+                <li><b>Check whether the source was inside your network.</b> An internal scanner usually means that device is already compromised and should come off the network today.</li>
+                <li><b>If it came from outside</b>, confirm no ports are forwarded to that PC from the internet. If none are, the firewall did its job and there is nothing further to do.</li>
+                <li><b>Confirm the machine is patched</b>, since a scan is often the step before an attempt.</li>
+              </ol>
+              <div class="actions">
+                <button class="btn quiet">Reopen</button>
+                <button class="btn quiet">Ask LightHouse about this</button>
+              </div>
+              <p class="ai-note">Written on this appliance by qwen3:8b and checked against the alert schema. Nothing left your network.</p>
+            </div>
+          </details>
+          <details class="alert">
+            <summary>
+              <span class="dot low"></span>
+              <div><span class="sev">Low</span><span class="pill">Resolved</span>
+                <b>Certificate expires in 14 days</b>
+                <p>The internal certificate for the print server needs renewing this month.</p></div>
+              <span class="when">Yesterday, 8:02 AM</span><span class="chev">&#9662;</span>
+            </summary>
+            <div class="detail">
+              <p class="eyebrow">What this means</p>
+              <p>Nothing is wrong yet. When the certificate lapses, staff will start seeing security
+                warnings when they print, and some devices will refuse to connect at all.</p>
+              <p class="eyebrow">Recommended steps</p>
+              <ol>
+                <li><b>Renew it now rather than on the day.</b> Fourteen days is comfortable; the last morning is not.</li>
+                <li><b>Install the new certificate and restart the print service</b> so it is actually picked up.</li>
+                <li><b>Check the new expiry date reads a year out</b>, then set a reminder for eleven months.</li>
+              </ol>
+              <div class="actions">
+                <button class="btn quiet">Reopen</button>
+                <button class="btn quiet">Ask LightHouse about this</button>
+              </div>
+              <p class="ai-note">Written on this appliance by qwen3:8b and checked against the alert schema. Nothing left your network.</p>
+            </div>
+          </details>
+          <details class="alert">
+            <summary>
+              <span class="dot low"></span>
+              <div><span class="sev">Low</span><span class="pill">Dismissed</span>
+                <b>Scheduled backup traffic spike</b>
+                <p>Expected nightly transfer to the backup appliance. Marked as normal.</p></div>
+              <span class="when">2 days ago</span><span class="chev">&#9662;</span>
+            </summary>
+            <div class="detail">
+              <p class="eyebrow">What this means</p>
+              <p>A large transfer left the file server at 02:00 and matched the size and destination of
+                your nightly backup. This is your own job running, not data leaving unexpectedly.</p>
+              <p class="eyebrow">Recommended steps</p>
+              <ol>
+                <li><b>No action needed.</b> The behaviour is expected.</li>
+                <li><b>Silence it in future</b> by adding a suppression window for that host between 01:45 and 03:00, so real overnight anomalies still stand out.</li>
+              </ol>
+              <div class="actions">
+                <button class="btn quiet">Reopen</button>
+                <button class="btn quiet">Add suppression window</button>
+              </div>
+              <p class="ai-note">Written on this appliance by qwen3:8b and checked against the alert schema. Nothing left your network.</p>
+            </div>
+          </details>
+        </section>
+      </div>
+
+      <!-- ===================== TRENDS ===================== -->
+      <div class="page" id="page-trends">
+        <p class="eyebrow">Trends</p>
+        <h1>Alert activity<br>over time</h1>
+        <p class="lede">Seven days of triaged alerts, grouped by the severity LightHouse assigned.</p>
+        <section class="cards">
+          <div><small>Alerts this week</small><strong>39</strong><p>Up 8 on the week before.</p></div>
+          <div><small>Median triage time</small><strong>1.9s</strong><p>Local model, no network round trip.</p></div>
+          <div><small>Duplicates suppressed</small><strong>112</strong><p>Folded into existing alerts.</p></div>
+        </section>
+
+        <div class="chart">
+          <div class="legend">
+            <span><i></i>Low</span>
+            <span class="m"><i></i>Medium</span>
+            <span class="h"><i></i>High</span>
+          </div>
+          <div class="plot">
+            <div class="grid">
+              <i style="top:0"></i><b style="top:0">10</b>
+              <i style="top:50%"></i><b style="top:50%">5</b>
+              <i style="top:100%"></i><b style="top:100%">0</b>
+            </div>
+            <div class="col">
+              <span class="m" style="height:18px"><em>Mon &middot; 1 medium</em></span>
+              <span style="height:60px"><em>Mon &middot; 3 low</em></span>
+            </div>
+            <div class="col">
+              <span class="m" style="height:38px"><em>Tue &middot; 2 medium</em></span>
+              <span style="height:40px"><em>Tue &middot; 2 low</em></span>
+            </div>
+            <div class="col">
+              <span class="h" style="height:18px"><em>Wed &middot; 1 high</em></span>
+              <span class="m" style="height:18px"><em>Wed &middot; 1 medium</em></span>
+              <span style="height:100px"><em>Wed &middot; 5 low</em></span>
+            </div>
+            <div class="col">
+              <span class="m" style="height:38px"><em>Thu &middot; 2 medium</em></span>
+              <span style="height:80px"><em>Thu &middot; 4 low</em></span>
+            </div>
+            <div class="col">
+              <span class="h" style="height:18px"><em>Fri &middot; 1 high</em></span>
+              <span class="m" style="height:58px"><em>Fri &middot; 3 medium</em></span>
+              <span style="height:120px"><em>Fri &middot; 6 low</em></span>
+            </div>
+            <div class="col">
+              <span class="m" style="height:18px"><em>Sat &middot; 1 medium</em></span>
+              <span style="height:40px"><em>Sat &middot; 2 low</em></span>
+            </div>
+            <div class="col">
+              <span class="m" style="height:38px"><em>Sun &middot; 2 medium</em></span>
+              <span style="height:60px"><em>Sun &middot; 3 low</em></span>
+            </div>
+          </div>
+          <div class="xaxis"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
+          <details class="table">
+            <summary>Table view</summary>
+            <table>
+              <tr><th>Day</th><th>Low</th><th>Medium</th><th>High</th><th>Total</th></tr>
+              <tr><td>Mon</td><td>3</td><td>1</td><td>0</td><td>4</td></tr>
+              <tr><td>Tue</td><td>2</td><td>2</td><td>0</td><td>4</td></tr>
+              <tr><td>Wed</td><td>5</td><td>1</td><td>1</td><td>7</td></tr>
+              <tr><td>Thu</td><td>4</td><td>2</td><td>0</td><td>6</td></tr>
+              <tr><td>Fri</td><td>6</td><td>3</td><td>1</td><td>10</td></tr>
+              <tr><td>Sat</td><td>2</td><td>1</td><td>0</td><td>3</td></tr>
+              <tr><td>Sun</td><td>3</td><td>2</td><td>0</td><td>5</td></tr>
+            </table>
+          </details>
+        </div>
+      </div>
+
+      <!-- ===================== ADVANCED ANALYTICS ===================== -->
+      <div class="page" id="page-advanced">
+        <p class="eyebrow">Advanced</p>
+        <h1>Technical<br>workspace</h1>
+        <p class="lede">Raw evidence and model reasoning behind each triaged alert. Analyst and admin only.</p>
+        <section class="cards">
+          <div><small>Events ingested</small><strong>18.4k</strong><p>Suricata, Zeek and Wazuh, last 24 hours.</p></div>
+          <div><small>Model latency</small><strong>1.9s</strong><p>Median, qwen3:8b on this appliance.</p></div>
+          <div><small>Validation failures</small><strong>3</strong><p>Model output rejected by the schema.</p></div>
+        </section>
+
+        <h3>Device activity</h3>
+        <table class="list">
+          <tr><th>Device</th><th>Address</th><th>Events</th><th>Last seen</th></tr>
+          <tr><td><b>front-desk-pc</b></td><td>10.0.4.21</td><td>6,204</td><td>2 min ago</td></tr>
+          <tr><td><b>file-server</b></td><td>10.0.4.10</td><td>5,881</td><td>1 min ago</td></tr>
+          <tr><td><b>unknown-66</b></td><td>10.0.4.66</td><td>3,417</td><td>4 min ago</td></tr>
+          <tr><td><b>print-server</b></td><td>10.0.4.32</td><td>1,902</td><td>9 min ago</td></tr>
+        </table>
+
+        <h3>Appliance health</h3>
+        <div class="panel">
+          <div class="field"><div><b>Database</b><p>SQLite at /var/lib/lighthouse/lighthouse.db</p></div><span class="pill">Available</span></div>
+          <div class="field"><div><b>Model</b><p>Local Ollama endpoint, no external calls.</p></div><span class="pill">qwen3:8b</span></div>
+          <div class="field"><div><b>Load average</b><p>1 / 5 / 15 minutes.</p></div><span class="pill">0.42 &middot; 0.51 &middot; 0.47</span></div>
+          <div class="field"><div><b>Disk free</b><p>Retention trims raw events after 30 days.</p></div><span class="pill">184 GB</span></div>
+        </div>
+
+        <h3>Selected alert evidence</h3>
+        <p class="lede">Repeated failed logins from one address &mdash; model reasoning</p>
+        <p class="muted">14 authentication failures against a single host inside four minutes, from an address with
+          no prior successful session. Consistent with credential stuffing rather than a user mistyping a password.</p>
+        <h3>MITRE ATT&amp;CK</h3>
+        <p class="muted">T1110 Brute Force &middot; T1078 Valid Accounts</p>
+        <pre class="evidence">{
+  "source": "wazuh",
+  "rule": { "id": 5710, "level": 10, "description": "Multiple failed logins" },
+  "agent": { "name": "file-server", "ip": "10.0.4.10" },
+  "data": { "srcip": "10.0.4.66", "attempts": 14, "window_s": 233 },
+  "timestamp": "2026-09-09T11:07:14Z"
+}</pre>
+      </div>
+
+      <!-- ===================== SETTINGS ===================== -->
+      <div class="page" id="page-settings">
+        <p class="eyebrow">Settings</p>
+        <h1>Your<br>preferences</h1>
+        <p class="lede">These apply to your account only. Appliance-wide options live under Admin.</p>
+        <div class="panel">
+          <div class="field">
+            <div><b>Notification threshold</b><p>The lowest severity that will reach you.</p></div>
+            <select><option>Medium</option><option selected>High</option><option>Critical</option></select>
+          </div>
+          <div class="field">
+            <div><b>Quiet hours</b><p>Alerts still record; they just wait until morning.</p></div>
+            <input type="text" value="22:00 - 07:00" size="14" />
+          </div>
+          <div class="field">
+            <div><b>Notification address</b><p>Delivery is a later phase; this is stored locally for now.</p></div>
+            <input type="text" value="owner@example.com" size="22" />
+          </div>
+          <div class="field">
+            <div><b>Plain-English explanations</b><p>Show the model's summary above the technical detail.</p></div>
+            <span class="pill">On</span>
+          </div>
+        </div>
+        <h3>Monitoring sources</h3>
+        <div class="panel">
+          <div class="field"><div><b>Suricata</b><p>eve.json &mdash; alert events</p></div><span class="pill">Connected</span></div>
+          <div class="field"><div><b>Zeek</b><p>conn, dns and notice logs, JSON output</p></div><span class="pill">Connected</span></div>
+          <div class="field"><div><b>Wazuh</b><p>alerts.json export</p></div><span class="pill">Connected</span></div>
+        </div>
+        <div class="row-end"><button class="btn">Save preferences</button></div>
+      </div>
+
+      <!-- ===================== ADMIN ===================== -->
+      <div class="page" id="page-admin">
+        <p class="eyebrow">Administration</p>
+        <h1>Local<br>users</h1>
+        <p class="lede">Accounts exist only on this appliance. There is no cloud directory to sync with.</p>
+        <table class="list">
+          <tr><th>User</th><th>Role</th><th>Last sign-in</th><th></th></tr>
+          <tr><td><b>admin</b></td><td>Admin</td><td>Today, 8:31 AM</td><td><span class="pill">You</span></td></tr>
+          <tr><td><b>r.gotsev</b></td><td>Analyst</td><td>Today, 7:58 AM</td><td></td></tr>
+          <tr><td><b>front-desk</b></td><td>Owner</td><td>Yesterday, 5:12 PM</td><td></td></tr>
+        </table>
+        <div class="row-end"><button class="btn">Add user</button></div>
+
+        <h3>Appliance</h3>
+        <div class="panel">
+          <div class="field"><div><b>Bind address</b><p>Which interface serves the dashboard and API.</p></div><span class="pill">127.0.0.1:8000</span></div>
+          <div class="field"><div><b>TLS</b><p>Required before the dashboard is reachable across the LAN.</p></div><span class="pill">Not configured</span></div>
+          <div class="field"><div><b>Data retention</b><p>Raw events, explanations and duplicate counts.</p></div><span class="pill">30 days</span></div>
+          <div class="field"><div><b>Deduplication window</b><p>Repeat alerts inside this window fold together.</p></div><span class="pill">30 minutes</span></div>
+        </div>
+        <div class="row-end"><button class="btn quiet">Download diagnostics</button></div>
+      </div>
+      </div><!-- /.pages -->
+      </div><!-- /.sheet -->
+
+      <div class="dock">
+        <form><textarea rows="1" placeholder="Ask LightHouse about your network…"></textarea><button type="button" aria-label="Send chat">↑</button></form>
+        <small>LighHouse is AI, it can make mistakes. Chats stays on this appliance for your privacy.</small>
+      </div>
     </main>
   </div>
-  <script>document.querySelector('.collapse').addEventListener('click', () => document.querySelector('.app').classList.toggle('collapsed'));</script>
+
+  <script>
+    const boot = document.getElementById('boot');
+    const booted = document.documentElement.classList.contains('booted');
+    // reduced motion hides the boot overlay entirely, so waiting out its 4.8s would just
+    // leave those users staring at a static skeleton
+    const reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion:reduce)').matches);
+    const quick = booted || reduced;
+    try { sessionStorage.setItem('lh-booted', '1'); } catch (e) {}
+    if (boot) setTimeout(() => boot.remove(), quick ? 0 : 4800);
+
+    const app = document.querySelector('.app');
+    const toggle = document.querySelector('.collapse');
+    toggle.addEventListener('click', () => {
+      const collapsed = app.classList.toggle('collapsed');
+      toggle.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+      toggle.setAttribute('aria-expanded', String(!collapsed));
+    });
+
+    const main = document.querySelector('main');
+    const sheet = document.querySelector('.sheet');
+    // stands in for the fetch each page will make against the local API
+    let pending;
+    const load = (ms) => {
+      main.classList.add('loading');
+      clearTimeout(pending);
+      pending = setTimeout(() => main.classList.remove('loading'), ms);
+    };
+    load(quick ? 900 : 4900);
+
+    document.querySelectorAll('nav button[data-page]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
+        document.getElementById('page-' + btn.dataset.page).classList.add('on');
+        main.classList.toggle('with-dock', btn.dataset.page === 'home');
+        sheet.scrollTop = 0;
+        load(650);
+      });
+    });
+
+    document.querySelectorAll('.chips button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        btn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+        btn.classList.add('on');
+      });
+    });
+
+  </script>
 </body>
 </html>

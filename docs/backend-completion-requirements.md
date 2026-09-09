@@ -1,6 +1,6 @@
 # Backend completion requirements
 
-This document lists the information and access needed to run, validate, and complete GUARD's backend on the planned Linux VM.
+This document lists the information and access needed to run, validate, and complete LightHouse's backend on the planned Linux VM.
 
 ## Required before backend validation
 
@@ -24,7 +24,7 @@ This document lists the information and access needed to run, validate, and comp
   - Suricata alert events from `eve.json`
   - Zeek JSON logs, including which logs to ingest first (`conn`, `dns`, `notice`, etc.)
   - Wazuh alert JSON export
-- The Linux user/group that owns each log and the read-access method for the GUARD service.
+- The Linux user/group that owns each log and the read-access method for the LightHouse service.
 - Confirmation that Zeek is configured for JSON output (`LogAscii::use_json=T`).
 - The log rotation behavior for each source, so the tailing worker can handle file replacement correctly.
 
