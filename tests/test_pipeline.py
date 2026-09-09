@@ -1,6 +1,9 @@
 import asyncio
 from datetime import datetime, timezone
 
+from fastapi.testclient import TestClient
+
+from triage import api
 from triage.db import Database
 from triage.llm import FixtureTriageModel
 from triage.schema import NormalizedAlert, Source
@@ -22,3 +25,52 @@ def test_role_session(tmp_path):
     db = Database(str(tmp_path / "test.db")); db.initialize()
     session = db.authenticate("admin", "change-me-now")
     assert session and db.user_for_token(session["token"])["role"] == "admin"
+
+
+def test_admin_user_validation_and_logout(tmp_path, monkeypatch):
+    db = Database(str(tmp_path / "test.db"))
+    db.initialize()
+    monkeypatch.setattr(api, "db", db)
+    client = TestClient(api.app)
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "change-me-now"},
+    )
+    token = login.json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    weak = client.post(
+        "/api/users",
+        headers=headers,
+        json={"username": "new user", "password": "short", "role": "owner"},
+    )
+    assert weak.status_code == 422
+
+    oversized = client.post(
+        "/api/users",
+        headers=headers,
+        json={"username": "unicode", "password": "🔒" * 20, "role": "owner"},
+    )
+    assert oversized.status_code == 422
+
+    created = client.post(
+        "/api/users",
+        headers=headers,
+        json={"username": "new-owner", "password": "long-demo-passphrase", "role": "owner"},
+    )
+    assert created.status_code == 201
+
+    owner_login = client.post(
+        "/api/auth/login",
+        json={"username": "new-owner", "password": "long-demo-passphrase"},
+    )
+    owner_headers = {"Authorization": f"Bearer {owner_login.json()['token']}"}
+    forbidden = client.post(
+        "/api/users",
+        headers=owner_headers,
+        json={"username": "escalated", "password": "another-passphrase", "role": "admin"},
+    )
+    assert forbidden.status_code == 403
+
+    assert client.post("/api/auth/logout", headers=headers).status_code == 204
+    assert client.get("/api/users", headers=headers).status_code == 401

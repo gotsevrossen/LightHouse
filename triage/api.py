@@ -8,7 +8,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from .db import Database
 from .schema import AlertStatus
@@ -19,8 +19,28 @@ app = FastAPI(title="GUARD Local API", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 security = HTTPBearer()
 
-class Login(BaseModel): username: str; password: str
-class UserCreate(Login): role: str
+class Login(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+    @field_validator("password")
+    @classmethod
+    def bcrypt_length(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("Password must be at most 72 UTF-8 bytes")
+        return value
+
+class UserCreate(BaseModel):
+    username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    password: str = Field(min_length=12, max_length=256)
+    role: str
+
+    @field_validator("password")
+    @classmethod
+    def bcrypt_length(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("Password must be at most 72 UTF-8 bytes")
+        return value
 class Setting(BaseModel): key: str; value: str
 class StatusChange(BaseModel): status: AlertStatus
 
@@ -40,6 +60,10 @@ def login(body: Login):
     user = db.authenticate(body.username, body.password)
     if not user: raise HTTPException(401, "Invalid credentials")
     return user
+
+@app.post("/api/auth/logout", status_code=204)
+def logout(credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)]):
+    db.delete_session(credentials.credentials)
 
 @app.get("/api/alerts")
 def alerts(severity: str | None = None, status: str | None = None, user=Depends(require("owner", "analyst", "admin"))): return db.list_alerts(severity, status)
