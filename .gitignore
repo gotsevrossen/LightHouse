@@ -6,3 +6,5 @@ guard.db
 dashboard/node_modules/
 dashboard/dist/
 .env
+
+dashboard/*.tsbuildinfo

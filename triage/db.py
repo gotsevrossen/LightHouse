@@ -13,6 +13,8 @@ import bcrypt
 from .dedupe import fingerprint
 from .schema import AlertDetail, AlertStatus, NormalizedAlert, Severity, TriageResult
 
+_DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"invalid-password", bcrypt.gensalt())
+
 
 class Database:
     def __init__(self, path: str = "guard.db"):
@@ -103,7 +105,8 @@ class Database:
     def authenticate(self, username: str, password: str) -> dict[str, Any] | None:
         with self.connect() as con:
             row = con.execute("SELECT id,username,password_hash,role FROM users WHERE username=?", (username,)).fetchone()
-            if not row or not bcrypt.checkpw(password.encode(), row["password_hash"]): return None
+            password_matches = bcrypt.checkpw(password.encode(), row["password_hash"] if row else _DUMMY_PASSWORD_HASH)
+            if not row or not password_matches: return None
             token = secrets.token_urlsafe(32)
             expires = (datetime.now(timezone.utc) + timedelta(hours=8)).isoformat()
             con.execute("INSERT INTO sessions(token,user_id,expires_at) VALUES(?,?,?)", (token, row["id"], expires))
@@ -115,6 +118,10 @@ class Database:
             con.execute("DELETE FROM sessions WHERE expires_at<?", (now,))
             row = con.execute("SELECT u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?", (token,)).fetchone()
             return dict(row) if row else None
+
+    def delete_session(self, token: str) -> None:
+        with self.connect() as con:
+            con.execute("DELETE FROM sessions WHERE token=?", (token,))
 
     def users(self) -> list[dict[str, Any]]:
         with self.connect() as con: return [dict(r) for r in con.execute("SELECT id,username,role FROM users ORDER BY username")]
