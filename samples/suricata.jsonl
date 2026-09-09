@@ -1,0 +1,1 @@
+{"timestamp":"2026-09-08T12:00:00.000000+0000","flow_id":12345,"event_type":"alert","src_ip":"192.168.1.25","dest_ip":"192.168.1.1","alert":{"signature_id":2001219,"signature":"ET SCAN Nmap Scripting Engine User-Agent Detected","metadata":{"mitre":[{"technique_id":"T1046"}]}}}
