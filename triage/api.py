@@ -10,7 +10,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -121,10 +121,10 @@ def login(body: Login):
     return user
 
 
-@app.post("/api/auth/logout")
+@app.post("/api/auth/logout", status_code=204)
 def logout(user=Depends(current_user)):
     db.revoke_token(user["token"])
-    return {"ok": True}
+    return Response(status_code=204)
 
 
 @app.post("/api/auth/password")
@@ -208,7 +208,9 @@ def users(user=Depends(require("admin"))):
 def create_user(body: UserCreate, user=Depends(require("admin"))):
     if body.role not in set(ALL_ROLES): raise HTTPException(422, "Invalid role")
     try:
-        db.create_user(body.username, body.password, body.role)
+        # The admin choosing this password knows it, so the owner of the account must
+        # replace it at first login — same rule as an admin-driven password reset.
+        db.create_user(body.username, body.password, body.role, must_change_password=True)
     except sqlite3.IntegrityError:
         # Only a constraint violation is a name collision. A full disk or a locked
         # database must not be reported as one.

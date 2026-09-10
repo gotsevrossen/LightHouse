@@ -28,6 +28,11 @@ npm ci
 npm run build
 ```
 
+The built dashboard uses the LightHouse UI frame as its initial interface. Its
+sidebar navigation, collapse control, recent chats, alert actions, filters, trends,
+settings, administration, sign out, and local chat prompts are connected to the
+React application and API.
+
 `npm run build` writes static assets to `dashboard/dist`. Nothing from `dashboard/` other than `dist/` needs to reach the appliance: build here, then copy the directory across (`rsync -a dashboard/dist/ appliance:/opt/lighthouse/dashboard/dist/`) and point `LIGHTHOUSE_STATIC_DIR` at it. Build output is deliberately not committed — `dashboard/dist/` and `node_modules/` are in `.gitignore`. Building on the appliance itself also works, but then it needs Node 20+ and a full `node_modules` tree.
 
 **Lockfile — do this once, before the first deployment.** This repository does not ship `dashboard/package-lock.json` yet, and `npm ci` refuses to run without one. On a trusted workstation (not the customer appliance) run `npm install` once, review the resulting `dashboard/package-lock.json`, and commit it. From then on every build uses `npm ci`, which installs exactly the reviewed tree and nothing newer. Every dependency in `package.json` is pinned to an exact version, but only a committed lockfile pins the transitive dependencies — and npm runs install scripts as the deploying user on a host that can read the session-token database.

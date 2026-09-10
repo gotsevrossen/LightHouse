@@ -39,7 +39,7 @@ This document lists the information and access needed to run, validate, and comp
 - Appliance dashboard bind address and port.
 - Firewall policy identifying which local subnets may reach the API and dashboard.
 - TLS decision: local certificate/HTTPS setup or strictly isolated demo-network HTTP.
-- Secure initial-admin password delivery and password-change requirement. The current seeded `admin / change-me-now` credential is demo-only and must be changed before LAN access.
+- Secure initial-admin password delivery and password-change requirement. The application generates a one-time random bootstrap password and requires it to be changed before normal access.
 - Data-retention policy for raw alerts, model explanations, and duplicate occurrences.
 
 ## Decisions needed to finish production behavior

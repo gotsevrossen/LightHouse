@@ -33,15 +33,21 @@ def test_role_session(tmp_path):
 
 def test_admin_user_validation_and_logout(tmp_path, monkeypatch):
     db = Database(str(tmp_path / "test.db"))
-    db.initialize()
+    seeded_password = db.initialize()
     monkeypatch.setattr(api, "db", db)
     client = TestClient(api.app)
     login = client.post(
         "/api/auth/login",
-        json={"username": "admin", "password": "change-me-now"},
+        json={"username": "admin", "password": seeded_password},
     )
     token = login.json()["token"]
     headers = {"Authorization": f"Bearer {token}"}
+    # The seeded admin owes a password change, and that blocks every other route.
+    assert client.post(
+        "/api/auth/password",
+        headers=headers,
+        json={"current_password": seeded_password, "new_password": "admin-real-passphrase"},
+    ).status_code == 200
 
     weak = client.post(
         "/api/users",
@@ -69,6 +75,14 @@ def test_admin_user_validation_and_logout(tmp_path, monkeypatch):
         json={"username": "new-owner", "password": "long-demo-passphrase"},
     )
     owner_headers = {"Authorization": f"Bearer {owner_login.json()['token']}"}
+    # Clear the admin-chosen password first, so the 403 below is the role gate and
+    # not the pending password change.
+    assert owner_login.json()["must_change_password"] is True
+    assert client.post(
+        "/api/auth/password",
+        headers=owner_headers,
+        json={"current_password": "long-demo-passphrase", "new_password": "owner-real-passphrase"},
+    ).status_code == 200
     forbidden = client.post(
         "/api/users",
         headers=owner_headers,

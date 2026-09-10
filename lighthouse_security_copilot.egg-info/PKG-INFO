@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: lighthouse-security-copilot
+Version: 0.1.0
+Summary: Local AI security triage service
+Requires-Python: >=3.11
+Requires-Dist: fastapi<1,>=0.115
+Requires-Dist: uvicorn[standard]<1,>=0.30
+Requires-Dist: pydantic<3,>=2.8
+Requires-Dist: httpx<1,>=0.27
+Requires-Dist: bcrypt<5,>=4.2
+Provides-Extra: dev
+Requires-Dist: pytest<9,>=8.3; extra == "dev"
+Requires-Dist: pytest-asyncio<1,>=0.24; extra == "dev"
