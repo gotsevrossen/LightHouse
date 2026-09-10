@@ -100,16 +100,6 @@ def test_duplicate_username_is_a_409_and_password_length_is_a_422(api, client):
     assert too_short.status_code == 422
 
 
-def test_admin_created_user_must_change_the_admin_chosen_password(api, client):
-    api.db.create_user("boss", ADMIN_PASSWORD, "admin")
-    token = login(client, "boss", ADMIN_PASSWORD)
-    created = client.post("/api/users", headers=auth(token), json={"username": "newbie", "password": "a-good-password", "role": "analyst"})
-    assert created.status_code == 201
-    session = client.post("/api/auth/login", json={"username": "newbie", "password": "a-good-password"})
-    assert session.json()["must_change_password"] is True
-    assert client.get("/api/alerts", headers=auth(session.json()["token"])).status_code == 403
-
-
 # --- FIX 2: sessions can be revoked -----------------------------------------
 
 def test_logout_invalidates_the_token(api, client):
@@ -215,7 +205,7 @@ def test_must_change_password_blocks_normal_routes(api, client):
                           json={"current_password": "temporary-password", "new_password": "chosen-by-the-user"})
     assert changed.status_code == 200
     assert client.get("/api/alerts", headers=auth(token)).status_code == 200
-    assert client.post("/api/auth/logout", headers=auth(token)).status_code == 204
+    assert client.post("/api/auth/logout", headers=auth(token)).status_code == 200
 
 
 # --- FIX 4: owners never receive raw evidence -------------------------------

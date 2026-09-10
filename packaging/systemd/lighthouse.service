@@ -1,0 +1,33 @@
+[Unit]
+Description=LightHouse local security copilot
+Documentation=file:///usr/share/doc/lighthouse/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lighthouse
+Group=lighthouse
+# Written by install-monitoring-stack.sh: the database path, the sensor log
+# paths, and the model chosen for this machine's hardware.
+EnvironmentFile=/etc/lighthouse/lighthouse.env
+# The API and the ingestion loop in one process. LIGHTHOUSE_DESKTOP (set in the
+# environment file) is what makes the API start ingestion in its own lifespan,
+# so there is one unit to supervise instead of two.
+ExecStart=/usr/lib/lighthouse/lighthouse --headless
+Restart=on-failure
+RestartSec=5
+
+# The window is a viewer; this is the thing that must survive it. Monitoring
+# keeps running from boot whether or not anybody has ever opened the dashboard.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/lighthouse
+
+[Install]
+WantedBy=multi-user.target

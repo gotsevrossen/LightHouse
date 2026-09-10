@@ -12,6 +12,7 @@ from typing import Any
 import bcrypt
 
 from .dedupe import fingerprint
+from .paths import data_dir, first_run_password_path, is_desktop
 from .schema import AlertDetail, AlertStatus, NormalizedAlert, TriageResult
 
 SCHEMA_SQL = """
@@ -49,7 +50,18 @@ class PasswordTooLongError(ValueError):
 
 
 def default_db_path() -> str:
-    return os.getenv("LIGHTHOUSE_DB_PATH", "lighthouse.db")
+    """Where the database lives when LIGHTHOUSE_DB_PATH does not say.
+
+    The appliance keeps the relative path it has always used; the desktop build
+    cannot, because it is launched from a menu entry with no meaningful working
+    directory and may be running from a read-only bundle.
+    """
+    configured = os.getenv("LIGHTHOUSE_DB_PATH", "").strip()
+    if configured:
+        return configured
+    if is_desktop():
+        return str(data_dir() / "lighthouse.db")
+    return "lighthouse.db"
 
 
 def hash_token(token: str) -> str:
@@ -75,8 +87,39 @@ def verify_password(password: str, password_hash: bytes) -> bool:
         return False
 
 
+def _write_first_run_password(password: str) -> None:
+    """Hand the generated password to the desktop window through a one-shot file.
+
+    On the appliance the operator reads it from the journal, which is fine for
+    someone already at a terminal. The desktop app has no terminal to read, so the
+    password is written 0600 to the per-user data directory and the desktop entry
+    point displays it and deletes it. It is written only in desktop mode, and only
+    on the single run that generates it.
+    """
+    path = first_run_password_path()
+    # 0600 at creation time, and O_NOFOLLOW where the platform has it, so the
+    # file cannot be pre-created as a symlink pointing the password somewhere
+    # else. O_NOFOLLOW is POSIX-only; Linux is the platform this build targets.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    # 0640 rather than 0600 because when the background service writes this the
+    # reader is a different account: the person at the machine, placed in the
+    # lighthouse group by the package. The containing directory is 0750, so
+    # "group" is that one person and not every local user.
+    try:
+        descriptor = os.open(str(path), flags, 0o640)
+    except OSError:
+        return
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(password)
+    except OSError:
+        # A failed write is not fatal: the banner on stdout is still the source
+        # of truth, and the account can be re-provisioned.
+        pass
+
+
 def _print_seed_banner(password: str) -> None:
-    """Shown once, on stdout only. This value is never logged or written to a file."""
+    """Shown once, on stdout only. This value is never logged."""
     line = "=" * 70
     print(line)
     print("LightHouse created the initial administrator account.")
@@ -126,6 +169,8 @@ class Database:
         self._restrict_permissions()
         if seeded:
             _print_seed_banner(seeded)
+            if is_desktop():
+                _write_first_run_password(seeded)
         return seeded
 
     def _migrate(self, con: sqlite3.Connection) -> None:

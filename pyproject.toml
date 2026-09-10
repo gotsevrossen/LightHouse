@@ -16,7 +16,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3,<9", "pytest-asyncio>=0.24,<1"]
+# The native window for the Linux desktop build. Not installed on the appliance,
+# which has no display and serves the same dashboard over the LAN instead.
+desktop = ["pywebview>=5.1,<6"]
+dev = ["pytest>=8.3,<9", "pytest-asyncio>=0.24,<1", "pyinstaller>=6.10,<7"]
+
+[project.scripts]
+lighthouse-desktop = "triage.desktop:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

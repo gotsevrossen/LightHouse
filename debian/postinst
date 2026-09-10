@@ -1,0 +1,55 @@
+#!/bin/sh
+# Runs as root after the package files are unpacked. Everything a person would
+# otherwise have had to do in a terminal happens here, because the audience for
+# this package cannot be asked to open one.
+set -e
+
+STATE_DIR="/var/lib/lighthouse"
+HANDOFF_DIR="${STATE_DIR}/handoff"
+ENV_FILE="/etc/lighthouse/lighthouse.env"
+
+case "$1" in
+    configure)
+        # Installs Suricata, Zeek, the Wazuh manager and Ollama, detects this
+        # machine's real subnet for HOME_NET, creates the lighthouse account and
+        # writes the environment file. Idempotent, so a reinstall or an upgrade
+        # re-runs it safely.
+        /usr/lib/lighthouse/install-monitoring-stack.sh
+
+        # The one-time admin password handoff. The service writes it as the
+        # lighthouse account; the window reads it as the person at the machine,
+        # so that person is put in the lighthouse group. 0750 keeps every other
+        # local account out.
+        install -d -o lighthouse -g lighthouse -m 0750 "$HANDOFF_DIR"
+
+        # SUDO_USER is who ran the install; without it (an unattended install)
+        # fall back to the first human account, which on a single-user desktop is
+        # the owner. If neither resolves, the password still reaches the journal.
+        DESKTOP_USER="${SUDO_USER:-$(getent passwd 1000 | cut -d: -f1)}"
+        if [ -n "$DESKTOP_USER" ] && id "$DESKTOP_USER" >/dev/null 2>&1; then
+            adduser "$DESKTOP_USER" lighthouse >/dev/null 2>&1 || true
+            echo "[lighthouse] ${DESKTOP_USER} may now open the LightHouse dashboard."
+        else
+            echo "[lighthouse] WARNING: could not identify the desktop user." >&2
+            echo "[lighthouse] Run: sudo adduser <your-username> lighthouse" >&2
+        fi
+
+        if ! grep -q LIGHTHOUSE_FIRST_RUN_DIR "$ENV_FILE" 2>/dev/null; then
+            echo "LIGHTHOUSE_FIRST_RUN_DIR=${HANDOFF_DIR}" >> "$ENV_FILE"
+        fi
+
+        # Monitoring from boot, independent of the window.
+        systemctl daemon-reload
+        systemctl enable lighthouse.service
+        systemctl restart lighthouse.service
+
+        update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
+
+        echo "[lighthouse] Installed. Open LightHouse from your applications menu."
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+exit 0

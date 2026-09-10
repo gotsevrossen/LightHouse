@@ -1,0 +1,33 @@
+Package: lighthouse
+Section: net
+Priority: optional
+Architecture: amd64
+Maintainer: LightHouse <support@lighthouse.local>
+Homepage: https://github.com/gotsevrossen/LightHouse
+# The WebKitGTK runtime pywebview renders the dashboard in. Ubuntu 22.04 ships
+# the 4.0 ABI and 24.04 ships 4.1, so both are listed as alternatives rather than
+# pinning one and making the package uninstallable on the other release. python3-gi
+# and the GIR data are what pywebview's GTK backend imports at runtime; the WebKit
+# library alone does not pull them in.
+#
+# No ${misc:Depends}: that is a debhelper substitution variable, and this package
+# is assembled with dpkg-deb directly, which would ship it through unexpanded.
+Depends: libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37,
+         gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0,
+         python3-gi,
+         gir1.2-gtk-3.0,
+         curl,
+         gnupg,
+         software-properties-common,
+         adduser,
+         python3
+# Suricata, Zeek, Wazuh and Ollama are deliberately NOT dependencies: they come
+# from third-party repositories that apt does not know about until postinst adds
+# them, so declaring them here would make this package uninstallable.
+Description: LightHouse local AI security copilot
+ LightHouse turns local Suricata, Zeek, and Wazuh records into validated,
+ plain-English security guidance. Monitoring data and AI inference stay on
+ this machine; nothing is sent to a remote service.
+ .
+ Monitoring runs as a background service from boot. The desktop window is a
+ viewer onto it, so closing the window does not stop protection.

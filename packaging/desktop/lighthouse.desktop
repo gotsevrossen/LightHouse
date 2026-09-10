@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=LightHouse
+GenericName=Security Copilot
+Comment=See what your network needs, in plain English
+Exec=/usr/lib/lighthouse/lighthouse
+Icon=lighthouse
+Terminal=false
+Categories=Network;Security;Monitor;
+Keywords=security;network;monitoring;alerts;firewall;
+StartupNotify=true
+StartupWMClass=LightHouse

@@ -1,0 +1,37 @@
+#!/bin/sh
+# What survives an uninstall, and what does not.
+#
+# `remove` keeps everything: the database, the sensors, and the model. Removing
+# the application is not the same as asking for the alert history to be destroyed,
+# and re-downloading a multi-gigabyte model because someone reinstalled the
+# package would be its own kind of failure.
+#
+# `purge` is the explicit "remove the data too" request, and is honoured.
+set -e
+
+STATE_DIR="/var/lib/lighthouse"
+
+case "$1" in
+    remove)
+        systemctl daemon-reload 2>/dev/null || true
+        echo "[lighthouse] Monitoring stopped. Your alert history is kept in ${STATE_DIR}."
+        echo "[lighthouse] Suricata, Zeek, Wazuh and Ollama were left installed."
+        echo "[lighthouse] To remove the history too: sudo apt purge lighthouse"
+        ;;
+    purge)
+        # The database holds password hashes and session tokens as well as alert
+        # history, so a purge removes the whole state directory rather than
+        # leaving credential material behind on a machine being decommissioned.
+        rm -rf "$STATE_DIR"
+        rm -rf /etc/lighthouse
+        if getent passwd lighthouse >/dev/null 2>&1; then
+            deluser --system lighthouse >/dev/null 2>&1 || true
+        fi
+        systemctl daemon-reload 2>/dev/null || true
+        update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        echo "[lighthouse] Removed. The sensors themselves remain: remove them with"
+        echo "[lighthouse]   sudo apt purge suricata zeek wazuh-manager"
+        ;;
+esac
+
+exit 0

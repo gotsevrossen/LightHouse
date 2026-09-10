@@ -1,0 +1,15 @@
+#!/bin/sh
+# Stop monitoring before the files it runs from are removed.
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        systemctl stop lighthouse.service 2>/dev/null || true
+        systemctl disable lighthouse.service 2>/dev/null || true
+        ;;
+    upgrade|failed-upgrade)
+        # Left running across an upgrade; postinst restarts it on the new version.
+        ;;
+esac
+
+exit 0

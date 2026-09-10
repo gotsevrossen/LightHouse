@@ -69,11 +69,12 @@ async def _tail_source(service: TriageService, source: Source, path: Path) -> No
         print(f"error: stopped tailing {path}: {error}", file=sys.stderr, flush=True)
 
 
-async def tail(mock: bool) -> None:
-    """Follow every configured sensor log at once and triage each new record."""
-    configured = configured_sources()
-    if not configured:
-        raise SystemExit("No sensor log paths configured. Set at least one of: " + ", ".join(SOURCE_ENV_VARS.values()))
+def unreadable_sources(configured: dict[Source, Path]) -> list[str]:
+    """Describe every configured sensor log that cannot actually be read.
+
+    Returned rather than raised so the API lifespan can log the problem and keep
+    serving, while the CLI can still treat it as a startup failure.
+    """
     unreadable = []
     for source, path in configured.items():
         if not path.is_file():
@@ -84,10 +85,16 @@ async def tail(mock: bool) -> None:
                     pass
             except OSError as error:
                 unreadable.append(f"{SOURCE_ENV_VARS[source]}={path} ({error.strerror or error})")
-    if unreadable:
-        raise SystemExit("Cannot read configured sensor log: " + "; ".join(unreadable))
+    return unreadable
 
-    service = build_service(mock)
+
+async def run_ingestion(service: TriageService, configured: dict[Source, Path]) -> None:
+    """Tail every given sensor log until cancelled.
+
+    Takes an already-built service and an already-validated source map so the
+    same loop serves the `tail` CLI and the desktop build's in-process background
+    task without either one duplicating setup or error handling.
+    """
     tasks = [asyncio.create_task(_tail_source(service, source, path), name=str(source))
              for source, path in configured.items()]
     try:
@@ -101,6 +108,17 @@ async def tail(mock: bool) -> None:
         except asyncio.CancelledError:
             # Already shutting down; the cancellations above are what matter.
             pass
+
+
+async def tail(mock: bool) -> None:
+    """Follow every configured sensor log at once and triage each new record."""
+    configured = configured_sources()
+    if not configured:
+        raise SystemExit("No sensor log paths configured. Set at least one of: " + ", ".join(SOURCE_ENV_VARS.values()))
+    unreadable = unreadable_sources(configured)
+    if unreadable:
+        raise SystemExit("Cannot read configured sensor log: " + "; ".join(unreadable))
+    await run_ingestion(build_service(mock), configured)
 
 
 def cli() -> None:

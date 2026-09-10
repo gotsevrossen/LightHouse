@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import os
 import platform
 import shutil
 import sqlite3
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -16,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .db import Database, PasswordTooLongError, default_db_path
+from .paths import bundle_dir, is_desktop
 from .schema import AlertDetailOwner, AlertStatus
 
 logger = logging.getLogger(__name__)
@@ -33,6 +37,63 @@ def _flag(name: str) -> bool:
 db = Database(default_db_path())
 db.initialize()
 
+
+async def _ingestion_task() -> None:
+    """Tail the configured sensor logs for the lifetime of the API process.
+
+    Deliberately swallows everything below CancelledError. The desktop build runs
+    ingestion inside the API process so there is one service to install and one to
+    supervise, and the cost of that choice is exactly this: a parsing bug in a
+    sensor record must not be allowed to propagate out of this task and take the
+    dashboard down with it. A dead ingestion loop is a degraded install; a dead API
+    is an install the owner cannot even log in to.
+    """
+    try:
+        # Imported here rather than at module scope: triage.main pulls in the Ollama
+        # client and the readers, which the appliance's API process has no use for.
+        from .main import build_service, configured_sources, run_ingestion, unreadable_sources
+
+        configured = configured_sources()
+        if not configured:
+            logger.warning("No sensor log paths configured; live ingestion is not running.")
+            return
+        unreadable = unreadable_sources(configured)
+        if unreadable:
+            # Not fatal here, unlike the CLI: the dashboard is still worth serving
+            # with a sensor misconfigured, and the owner has no terminal to read an
+            # error on.
+            logger.error("Cannot read configured sensor log: %s", "; ".join(unreadable))
+            return
+        await run_ingestion(build_service(mock=False), configured)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # The whole body, not just the tail loop: building the service and reading
+        # the configuration can fail too, and an exception escaping this task would
+        # be re-raised when the lifespan awaits it, turning a degraded install into
+        # a failed shutdown.
+        logger.exception("Live ingestion stopped; the API keeps serving without it.")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start background ingestion alongside the API, desktop build only.
+
+    The appliance keeps ingestion in its own `python -m triage.main tail` process
+    and its own systemd unit, so nothing starts here for it.
+    """
+    task = asyncio.create_task(_ingestion_task(), name="ingestion") if is_desktop() else None
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            # Belt and braces alongside the task's own handler: shutting the window
+            # must never fail because ingestion did.
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+
 # The schema, the route table and the version string are only published when the
 # operator explicitly asks for them. A LAN scanner gets nothing.
 _dev_mode = _flag("LIGHTHOUSE_DEV")
@@ -42,6 +103,7 @@ app = FastAPI(
     docs_url="/docs" if _dev_mode else None,
     redoc_url="/redoc" if _dev_mode else None,
     openapi_url="/openapi.json" if _dev_mode else None,
+    lifespan=lifespan,
 )
 
 # Production serves the dashboard same-origin, so no CORS middleware is installed
@@ -224,9 +286,23 @@ def create_user(body: UserCreate, user=Depends(require("admin"))):
 def healthcheck(): return {"ok": True}
 
 
+@app.get("/api/health")
+def api_healthcheck():
+    """Unauthenticated liveness probe, under /api so the static mount cannot shadow it.
+
+    The desktop launcher calls this before deciding whether to start its own
+    server, so it has to answer before anybody has logged in. It therefore says
+    nothing a caller on loopback could not already infer from the login screen —
+    the detailed, fingerprintable view stays behind /api/advanced/health.
+    """
+    return {"ok": True}
+
+
 # Mounted last so it can never shadow an /api route. In production the built
 # dashboard is served from here, same-origin, instead of exposing the Vite dev
 # server on the LAN. Absent in development, where the directory does not exist.
-STATIC_DIR = Path(os.getenv("LIGHTHOUSE_STATIC_DIR", "dashboard/dist"))
+# bundle_dir() is the working directory from source and the PyInstaller extraction
+# directory in a frozen build, where nothing is relative to the working directory.
+STATIC_DIR = Path(os.getenv("LIGHTHOUSE_STATIC_DIR", "").strip() or bundle_dir() / "dashboard" / "dist")
 if STATIC_DIR.is_dir():
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="dashboard")
