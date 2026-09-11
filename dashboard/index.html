@@ -1,1 +1,100 @@
-<div id="root"></div><script type="module" src="/src/main.tsx"></script>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LightHouse</title>
+  <!-- No web fonts: this page must render identically on an air-gapped appliance,
+       and a blocked font request would otherwise stall first paint. -->
+  <!-- The boot overlay is inlined rather than rendered by React, so the green
+       screen paints before the bundle has parsed instead of after it. -->
+  <style>
+    :root{--green:#2A9679;--ground:#E9E9E9;
+      font-family:system-ui,-apple-system,"Segoe UI",Roboto,ui-sans-serif,"Helvetica Neue",Arial,sans-serif}
+    html,body{margin:0;background:var(--ground)}
+    .boot{position:fixed;inset:0;z-index:999;overflow:hidden;background:var(--green);
+      animation:boot-out .225s ease 2.225s forwards}
+    /* rooted to the bottom edge: it only travels straight up and translateY never
+       goes below 0, so the flat base stays planted on the bottom of the screen */
+    .boot-stage{position:absolute;left:50%;bottom:0;translate:-50% 0;
+      height:min(88vh,190vw);aspect-ratio:325/1046;
+      animation:rise .7s cubic-bezier(.2,.75,.3,1) both,lamp-out .79s ease 1.675s forwards}
+    .lh-head{position:absolute;inset:0;display:block;width:100%;height:100%}
+    /* the shaft is a straight-sided cone traced from the logo. the outer shape is
+       filled white and the striped layer is inset 2.6%, so the white left as a rim
+       reads as the tower's side walls, exactly as the logo draws them */
+    .lh-shaft{position:absolute;left:0;right:0;top:33.84%;bottom:0;background:#fff;
+      clip-path:polygon(15.7% 0,0.3% 100%,99.7% 100%,84.3% 0)}
+    .lh-stripes{position:absolute;inset:0;overflow:hidden;
+      clip-path:polygon(18.3% 0,2.9% 100%,97.1% 100%,81.7% 0)}
+    /* soft shoulders on each band so the diagonals do not read as stair-stepped */
+    .lh-stripes span{position:absolute;left:-40%;right:-40%;top:-60%;bottom:-60%;
+      background:repeating-linear-gradient(-25deg,#fff 0 6.3vh,var(--green) 6.5vh 12.6vh,#fff 12.8vh);
+      animation:barber .95s linear infinite}
+    /* one stripe period measured vertically: 12.8vh / cos(25deg) */
+    @keyframes barber{from{transform:translateY(0)}to{transform:translateY(-14.124vh)}}
+    @keyframes rise{from{opacity:0;transform:translateY(100%)}30%{opacity:1}to{opacity:1;transform:translateY(0)}}
+    /* lamp glow, sitting on the lantern */
+    .boot-stage::before{content:"";position:absolute;left:50%;top:23%;width:44vh;height:44vh;
+      translate:-50% -50%;border-radius:50%;z-index:1;
+      background:radial-gradient(circle,rgba(255,255,255,.3),rgba(255,255,255,0) 62%)}
+    /* zero-size anchor on the lantern; every beam pivots from this point */
+    .beams{position:absolute;left:50%;top:23%;width:0;height:0;z-index:2}
+    /* the wrapper carries the fixed angle, the inner element does the animating,
+       so the keyframes only touch opacity and scaleY */
+    .beams i{position:absolute;left:0;bottom:0;width:17vmax;height:100vmax;
+      transform-origin:50% 100%;transform:translateX(-50%) rotate(var(--a))}
+    .beams b{position:absolute;inset:0;transform-origin:50% 100%;opacity:0;filter:blur(4px);
+      background:linear-gradient(to top,rgba(255,255,255,.85),rgba(255,255,255,.38) 40%,rgba(255,255,255,0) 100%);
+      clip-path:polygon(50% 100%,0 0,100% 0);
+      animation:beam 1.01s ease-out both;animation-delay:var(--d)}
+    @keyframes beam{0%{opacity:0;transform:scaleY(.12)}30%{opacity:1}100%{opacity:0;transform:scaleY(1)}}
+    @keyframes lamp-out{to{opacity:0}}
+    @keyframes boot-out{to{opacity:0;visibility:hidden}}
+    #root{animation:app-in .25s ease 2.25s both}
+    @keyframes app-in{from{opacity:0}to{opacity:1}}
+    /* already booted this session: straight to the app, no green screen */
+    html.booted .boot{display:none}
+    html.booted #root{animation:none}
+    @media (prefers-reduced-motion:reduce){
+      .boot{display:none}
+      #root,.boot-stage,.beams b,.lh-stripes span{animation:none}
+    }
+  </style>
+  <script>
+    // decided before first paint so the green screen never flashes on a revisit
+    try { if (sessionStorage.getItem('lh-booted')) document.documentElement.className = 'booted'; } catch (e) {}
+  </script>
+</head>
+<body>
+  <div class="boot" id="boot" aria-hidden="true">
+    <div class="boot-stage">
+      <img class="lh-head" src="/assets/lighthouse-head.png" alt="" />
+      <div class="lh-shaft"><div class="lh-stripes"><span></span></div></div>
+      <div class="beams">
+        <i style="--a:-80deg;--d:.75s"><b></b></i>
+        <i style="--a:-53deg;--d:.85s"><b></b></i>
+        <i style="--a:-27deg;--d:.95s"><b></b></i>
+        <i style="--a:0deg;--d:1.05s"><b></b></i>
+        <i style="--a:27deg;--d:1.15s"><b></b></i>
+        <i style="--a:53deg;--d:1.25s"><b></b></i>
+        <i style="--a:80deg;--d:1.35s"><b></b></i>
+      </div>
+    </div>
+  </div>
+  <div id="root"></div>
+  <script>
+    // The overlay is removed from the DOM once it has played, so its fixed layer
+    // never sits over the app swallowing clicks. Reduced motion hides it outright,
+    // so those users must not be made to wait out an animation they never see.
+    (function () {
+      var boot = document.getElementById('boot');
+      var booted = document.documentElement.classList.contains('booted');
+      var reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion:reduce)').matches);
+      try { sessionStorage.setItem('lh-booted', '1'); } catch (e) {}
+      if (boot) setTimeout(function () { boot.remove(); }, booted || reduced ? 0 : 2600);
+    })();
+  </script>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

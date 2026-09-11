@@ -1,25 +1,648 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, KeyboardEvent, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { api, Alert, getSession, login, logout, safeParse, Session } from './api';
+import { api, Alert, getSession, login, logout, Session } from './api';
+import { Conversation, loadConversations, newId, saveConversations, titleFor, Turn } from './conversations';
 import './styles.css';
 import './sidebar.css';
 
 const advanced = (role?: string) => role === 'analyst' || role === 'admin';
 const icons: Record<string, string> = { home: '⌂', alerts: '!', trends: '↗', advanced: '⌘', settings: '⚙', admin: '♙' };
-const labels: Record<string, string> = { advanced: 'Advanced analytics' };
-const Nav = ({ item, tab, setTab }: { item: string; tab: string; setTab: (tab: string) => void }) => <button title={labels[item] || item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}><span className="nav-icon">{icons[item]}</span><span className="nav-label">{labels[item] || item}</span></button>;
-function RecentChats({ chats, open }: { chats: string[]; open: () => void }) { return <section className="recent-chats"><div className="recent-chats-heading"><span className="nav-label">Recent chats</span>{chats.length > 0 && <small className="nav-label">{chats.length}</small>}</div>{chats.length ? chats.map((chat, index) => <button className="recent-chat" key={`${chat}-${index}`} title={chat} onClick={open}><span className="chat-mark">↗</span><span className="nav-label">{chat}</span></button>) : <p className="recent-chats-empty nav-label">No chats yet</p>}</section>; }
-function Login({ onLogin }: { onLogin: (s: Session) => void }) { const [u, setU] = useState(''); const [p, setP] = useState(''); const [error, setError] = useState(''); return <main className="login"><section><p className="eyebrow">LIGHTHOUSE LOCAL</p><h1>Understand what your network needs.</h1><p>Security guidance stays on this appliance.</p><form onSubmit={async e => { e.preventDefault(); try { onLogin(await login(u, p)); } catch { setError('Check your username and password.'); } }}><input aria-label="Username" placeholder="Username" autoComplete="username" required value={u} onChange={e => setU(e.target.value)} /><input aria-label="Password" placeholder="Password" type="password" autoComplete="current-password" required value={p} onChange={e => setP(e.target.value)} /><button>Sign in</button>{error && <p>{error}</p>}</form></section></main>; }
-const detailOf = (error: unknown, fallback: string) => { const raw = error instanceof Error ? error.message : ''; try { const parsed = JSON.parse(raw); return typeof parsed?.detail === 'string' ? parsed.detail : fallback; } catch { return fallback; } };
-function ChangePassword({ session, onDone }: { session: Session; onDone: (s: Session) => void }) { const [current, setCurrent] = useState(''); const [next, setNext] = useState(''); const [confirm, setConfirm] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const submit = async (e: FormEvent) => { e.preventDefault(); if (next !== confirm) { setError('The new passwords do not match.'); return; } if (next.length < 12) { setError('Use at least 12 characters.'); return; } setBusy(true); try { onDone((await api.changePassword(current, next)) || { ...session, must_change_password: false }); } catch (failure) { setError(detailOf(failure, 'Could not change the password. Check the current password and try again.')); } finally { setBusy(false); } }; return <main className="login"><section><p className="eyebrow">LIGHTHOUSE LOCAL</p><h1>Choose a new password</h1><p>This appliance printed a one-time password to the server console on first start. Replace it before the dashboard opens.</p><form onSubmit={submit}><input aria-label="Current password" placeholder="Current password" type="password" autoComplete="current-password" required value={current} onChange={e => setCurrent(e.target.value)} /><input aria-label="New password" placeholder="New password (at least 12 characters)" type="password" autoComplete="new-password" required minLength={12} value={next} onChange={e => setNext(e.target.value)} /><input aria-label="Confirm new password" placeholder="Confirm new password" type="password" autoComplete="new-password" required minLength={12} value={confirm} onChange={e => setConfirm(e.target.value)} /><button disabled={busy}>{busy ? 'Saving…' : 'Save password'}</button>{error && <p>{error}</p>}</form></section></main>; }
-function Home({ alerts, open, rememberChat }: { alerts: Alert[]; open: (a: Alert) => void; rememberChat: (question: string) => void }) { const [message, setMessage] = useState(''); const [messages, setMessages] = useState<string[]>([]); const [interests, setInterests] = useState<Record<string, number>>(() => safeParse<Record<string, number>>('lighthouse-interests', {}, value => !!value && typeof value === 'object' && !Array.isArray(value))); const openAlerts = alerts.filter(a => a.status === 'open'); const urgent = openAlerts.filter(a => ['high', 'critical'].includes(a.severity)).length; const remember = (topic: string) => { const next = { ...interests, [topic]: (interests[topic] || 0) + 1 }; setInterests(next); try { localStorage.setItem('lighthouse-interests', JSON.stringify(next)); } catch { /* a blocked or full store must not break the chat */ } }; const topicFor = (question: string) => question.toLowerCase().includes('device') ? 'devices' : question.toLowerCase().includes('alert') ? 'alerts' : question.toLowerCase().includes('security') ? 'security' : 'network'; const favorite = Object.entries(interests).sort((a, b) => b[1] - a[1])[0]?.[0]; const suggestion = favorite === 'devices' ? 'Curious about a device? Ask which one needs attention…' : favorite === 'alerts' ? 'Want to unpack another alert together?' : favorite === 'security' ? 'Want a quick security check-in?' : favorite === 'network' ? 'Planning ahead? Ask what your network may need next…' : 'Ask LightHouse about your network…'; const ask = (question: string) => { remember(topicFor(question)); rememberChat(question); setMessages([...messages, `You: ${question}`, 'LightHouse: Chat will use the local Ollama model once its evaluation is complete.']); setMessage(''); }; const send = (e: FormEvent) => { e.preventDefault(); if (message.trim()) ask(message); }; const prompts = ['Summarize my network and security status', 'Explain what my most recent alert means', 'What should I address first?', 'Are there any unusual devices on my network?']; return <div className="home"><section className="welcome"><p className="eyebrow">NETWORK OVERVIEW</p><h1>{urgent ? `${urgent} items deserve attention` : 'Your network looks healthy'}</h1><div className="health"><i className={urgent ? 'warn' : ''} /> <b>{urgent ? 'Attention needed' : 'Monitoring active'}</b><small>{openAlerts.length} open alerts</small></div></section><section className="cards"><Card label="HEALTH STATUS" value={urgent ? 'Review alerts' : 'Good'} text="Monitoring sources are ready to report." /><Card label="OPEN ALERTS" value={String(openAlerts.length)} text="Items that have not been resolved." /><Card label="HIGH PRIORITY" value={String(urgent)} text="Potentially urgent activity." /></section><section className="recent"><p className="eyebrow">RECENT ACTIVITY</p><h2>Latest alerts</h2>{alerts.slice(0, 4).map(a => <AlertRow key={a.id} alert={a} open={a => { remember('alerts'); open(a); }} />)}{!alerts.length && <p>No alerts yet. Run fixture replay to seed the local demo.</p>}</section><section className="common-questions"><p className="eyebrow">COMMON QUESTIONS</p><div className="prompt-cards">{prompts.map(prompt => <button type="button" key={prompt} onClick={() => ask(prompt)}><span>{prompt}</span><b>↗</b></button>)}</div></section><section className="chat"><div>{messages.map((m, i) => <p className={m.startsWith('You:') ? 'mine' : ''} key={i}>{m}</p>)}</div><form onSubmit={send}><textarea rows={1} value={message} onChange={e => setMessage(e.target.value)} placeholder={suggestion} /><button>↑</button></form><small>Personalized locally from your activity; nothing is sent off the appliance.</small></section></div>; }
-const Card = ({ label, value, text }: { label: string; value: string; text: string }) => <div><small>{label}</small><strong>{value}</strong><p>{text}</p></div>;
-const AlertRow = ({ alert, open }: { alert: Alert; open: (a: Alert) => void }) => <article onClick={() => open(alert)}><span className={`dot ${alert.severity}`} /><div><b>{alert.title}</b><p>{alert.explanation}</p></div><small>{new Date(alert.timestamp).toLocaleString()}</small></article>;
-function Alerts({ alerts, open }: { alerts: Alert[]; open: (a: Alert) => void }) { const [status, setStatus] = useState('open'); const [severity, setSeverity] = useState('all'); const visible = alerts.filter(alert => (status === 'all' || alert.status === status) && (severity === 'all' || alert.severity === severity)); return <section><p className="eyebrow">ALERTS</p><h1>Security activity</h1><p className="muted">Select an alert for an explanation and recommended step.</p><div className="filters" aria-label="Alert filters"><label>Status<select value={status} onChange={e => setStatus(e.target.value)}><option value="open">Open</option><option value="resolved">Resolved</option><option value="dismissed">Dismissed</option><option value="all">All statuses</option></select></label><label>Priority<select value={severity} onChange={e => setSeverity(e.target.value)}><option value="all">All priorities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label><span>{visible.length} {visible.length === 1 ? 'alert' : 'alerts'}</span></div><div className="recent">{visible.map(a => <AlertRow key={a.id} alert={a} open={open} />)}{!visible.length && <div className="empty-state"><b>Nothing to review</b><p>No alerts match these filters.</p></div>}</div></section>; }
-function Detail({ item, close, refresh, ask }: { item: any; close: () => void; refresh: () => void; ask: (question: string) => void }) { const update = async (status: string) => { await api.setStatus(item.id, status); refresh(); close(); }; const isOpen = item.status === 'open'; return <div className="drawer"><button className="quiet" onClick={close}>Close</button><p className="eyebrow">{item.triage?.severity} PRIORITY</p><h2>{item.title}</h2><p>{item.triage?.explanation}</p><h3>Recommended next step</h3><p>{item.triage?.recommended_action}</p>{isOpen ? <><button onClick={() => update('resolved')}>Mark resolved</button><button className="quiet" onClick={() => update('dismissed')}>Dismiss</button></> : <button className="quiet" onClick={() => update('open')}>Reopen</button>}<button className="quiet" onClick={() => { ask(`Explain this alert: ${item.title}`); close(); }}>Ask LightHouse about this</button></div>; }
-function Trends() { const [data, setData] = useState<any[]>([]); useEffect(() => { api.trends().then(setData); }, []); const maximum = Math.max(1, ...data.map(x => x.count)); return <section><p className="eyebrow">TRENDS</p><h1>Alert activity over time</h1><p className="muted">A simple daily view of the activity GUARD has processed.</p><div className="panel trend-list">{data.map(x => <div className="trend-row" key={x.day + x.severity}><div><b>{x.day}</b><small>{x.severity} priority</small></div><div className="trend-track"><i className={`trend-bar ${x.severity}`} style={{ width: `${Math.max(8, (x.count / maximum) * 100)}%` }} /></div><strong>{x.count}</strong></div>)}{!data.length && <p>Trend data appears after alerts are processed.</p>}</div></section>; }
-function Advanced({ selected }: { selected: any }) { const [devices, setDevices] = useState<any[]>([]); const [health, setHealth] = useState<any>(); useEffect(() => { api.devices().then(setDevices); api.health().then(setHealth); }, []); return <section><p className="eyebrow">ADVANCED</p><h1>Technical workspace</h1><div className="cards"><div><small>DEVICE ACTIVITY</small>{devices.map(d => <p key={d.device}><b>{d.device}</b> · {d.events} events</p>)}</div><div><small>APPLIANCE HEALTH</small><p>{health?.database === 'available' ? 'Database available' : 'Loading…'}</p><p className="muted">Model: {health?.model || '—'}</p></div></div>{selected ? <><h2>Selected alert evidence</h2><h3>Model reasoning</h3><p>{selected.triage?.reasoning || 'No additional reasoning provided.'}</p><h3>MITRE ATT&CK</h3><p>{selected.mitre?.join(', ') || 'Not supplied by this source.'}</p><pre>{JSON.stringify(selected.raw, null, 2)}</pre></> : <p className="muted">Choose an alert in Alerts to view its raw evidence and AI reasoning.</p>}</section>; }
-function Settings() { const [threshold, setThreshold] = useState('high'); useEffect(() => { api.preferences().then(p => setThreshold(p.notification_threshold || 'high')); }, []); return <section><p className="eyebrow">SETTINGS</p><h1>Your preferences</h1><div className="panel"><label>Notification threshold <select value={threshold} onChange={e => { setThreshold(e.target.value); api.setPreference('notification_threshold', e.target.value); }}><option>medium</option><option>high</option><option>critical</option></select></label></div></section>; }
-function Admin() { const [users, setUsers] = useState<any[]>([]); const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [role, setRole] = useState('owner'); const [notice, setNotice] = useState(''); const loadUsers = () => api.users().then(setUsers); useEffect(() => { loadUsers(); }, []); const create = async (event: FormEvent) => { event.preventDefault(); setNotice(''); try { await api.createUser(username, password, role); setUsername(''); setPassword(''); setRole('owner'); setNotice('User created.'); await loadUsers(); } catch { setNotice('Unable to create user. Check the username and password requirements.'); } }; return <section><p className="eyebrow">ADMINISTRATION</p><h1>Local users</h1><p className="muted">Give each person only the access they need. Accounts remain on this appliance.</p><div className="admin-grid"><div className="panel"><h2>People with access</h2><div className="user-list">{users.map(u => <div key={u.id}><span className="avatar">{u.username.slice(0, 1).toUpperCase()}</span><p><b>{u.username}</b><small>{u.role}</small></p></div>)}</div><button className="quiet" type="button" onClick={() => setNotice('Diagnostics are available from the appliance service console.')}>Download diagnostics</button>{notice && <p className="form-notice" role="status">{notice}</p>}</div><form className="panel admin-form" onSubmit={create}><h2>Add a user</h2><label>Username<input required minLength={3} maxLength={64} pattern="[A-Za-z0-9][A-Za-z0-9._-]*" autoComplete="off" value={username} onChange={e => setUsername(e.target.value)} /></label><label>Temporary password<input required minLength={12} maxLength={256} type="password" autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} /></label><label>Access level<select value={role} onChange={e => setRole(e.target.value)}><option value="owner">Owner</option><option value="analyst">Analyst</option><option value="admin">Admin</option></select></label><button>Create user</button>{notice && <p className="form-notice" role="status">{notice}</p>}</form></div></section>; }
-function App() { const [session, setSession] = useState(getSession()); const [tab, setTab] = useState('home'); const [collapsed, setCollapsed] = useState(false); const [alerts, setAlerts] = useState<Alert[]>([]); const [selected, setSelected] = useState<any>(); const [recentChats, setRecentChats] = useState<string[]>(() => safeParse<string[]>('lighthouse-recent-chats', [], value => Array.isArray(value) && value.every(entry => typeof entry === 'string'))); const rememberChat = (question: string) => { const trimmed = question.trim(); if (!trimmed) return; const entry = trimmed.length > 60 ? `${trimmed.slice(0, 59)}…` : trimmed; const next = [entry, ...recentChats.filter(chat => chat !== entry)].slice(0, 8); setRecentChats(next); try { localStorage.setItem('lighthouse-recent-chats', JSON.stringify(next)); } catch { /* a private or full store must not break chat */ } }; const load = () => api.alerts().then(setAlerts).catch(console.error); useEffect(() => { if (session && !session.must_change_password) load(); }, [session]); if (!session) return <Login onLogin={setSession} />; if (session.must_change_password) return <ChangePassword session={session} onDone={setSession} />; const open = alerts.filter(alert => alert.status === 'open'); const theme = open.some(alert => ['high', 'critical'].includes(alert.severity)) ? 'risk-high' : open.some(alert => alert.severity === 'medium') ? 'risk-medium' : 'risk-good'; const primary = ['home', 'alerts', 'trends', ...(advanced(session.role) ? ['advanced'] : [])]; return <div className={`shell lighthouse-shell ${theme} ${collapsed ? 'collapsed' : ''}`}><aside><div className="brand"><div className="brand-mark" aria-hidden="true">✦</div><div className="brand-copy"><b>LightHouse</b><span>Guiding You to Safer Shores</span></div><button className="collapse" title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={() => setCollapsed(!collapsed)}>☰</button></div><nav>{primary.map(item => <Nav key={item} item={item} tab={tab} setTab={setTab} />)}</nav><RecentChats chats={recentChats} open={() => setTab('home')} /><nav className="bottom"><Nav item="settings" tab={tab} setTab={setTab} />{session.role === 'admin' && <Nav item="admin" tab={tab} setTab={setTab} />}<button className="signout" onClick={async () => { await logout(); setSession(null); }}><span className="nav-icon">⇥</span><span className="nav-label">Sign out</span></button></nav></aside><main>{tab === 'home' && <Home alerts={alerts} rememberChat={rememberChat} open={async a => setSelected(await api.detail(a.id))} />}{tab === 'alerts' && <Alerts alerts={alerts} open={async a => setSelected(await api.detail(a.id))} />}{tab === 'trends' && <Trends />}{tab === 'advanced' && <Advanced selected={selected} />}{tab === 'settings' && <Settings />}{tab === 'admin' && <Admin />}</main>{selected && <Detail item={selected} close={() => setSelected(null)} refresh={load} ask={question => { rememberChat(question); setTab('home'); }} />}</div>; }
+const labels: Record<string, string> = { home: 'Home', alerts: 'Alerts', trends: 'Trends', advanced: 'Advanced analytics', settings: 'Settings', admin: 'Admin' };
+const URGENT = ['high', 'critical'];
+const PROMPTS = ['Summarize my network and security status', 'Explain what my most recent alert means', 'What should I address first?', 'Are there any unusual devices on my network?'];
+const AI_NOTE = 'Written on this appliance and checked against the alert schema. Nothing left your network.';
+/* Chat has no endpoint yet; the local model is wired up once its evaluation lands. */
+const PLACEHOLDER_REPLY = 'Chat will run on the local Ollama model once its evaluation is complete. Until then, open an alert for the explanation and steps LightHouse has already written for it.';
+
+const detailOf = (error: unknown, fallback: string) => {
+  const raw = error instanceof Error ? error.message : '';
+  try { const parsed = JSON.parse(raw); return typeof parsed?.detail === 'string' ? parsed.detail : fallback; } catch { return fallback; }
+};
+
+/* "Today, 11:07 AM" reads faster than a full timestamp on a page where almost
+   everything happened today. Older entries fall back to the date. */
+function when(timestamp: string) {
+  const at = new Date(timestamp);
+  if (Number.isNaN(at.getTime())) return timestamp;
+  const time = at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  const days = Math.floor((midnight.getTime() - new Date(at).setHours(0, 0, 0, 0)) / 86400000);
+  if (days <= 0) return `Today, ${time}`;
+  if (days === 1) return `Yesterday, ${time}`;
+  if (days < 7) return `${days} days ago`;
+  return at.toLocaleDateString();
+}
+
+/* The model writes recommended_action as prose or as a numbered list. Both become
+   the same ordered list, with the lead sentence carrying the emphasis. */
+function steps(text?: string): { lead: string; rest: string }[] {
+  return (text || '').split(/\r?\n+/)
+    .map(line => line.replace(/^\s*(?:\d+[.)]|[-*•])\s*/, '').trim())
+    .filter(Boolean)
+    .map(line => {
+      const end = line.search(/[.!?](\s|$)/);
+      return end > 0 && end < line.length - 2 ? { lead: line.slice(0, end + 1), rest: line.slice(end + 1).trim() } : { lead: line, rest: '' };
+    });
+}
+
+const Skeleton = () => (
+  <div aria-hidden="true">
+    <span className="sk sk-eyebrow" />
+    <span className="sk sk-title" />
+    <span className="sk sk-title two" />
+    <div className="sk-cards"><span className="sk sk-card" /><span className="sk sk-card" /><span className="sk sk-card" /></div>
+    <div className="sk-rows">
+      {[['w30', 'w70'], ['w55', 'w70'], ['w30', 'w55'], ['w55', 'w70']].map(([a, b], index) => (
+        <div className="sk-row" key={index}>
+          <span className="sk sk-dot" /><div><span className={`sk sk-line ${a}`} /><span className={`sk sk-line ${b}`} /></div><span className="sk sk-line w12" />
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+const Nav = ({ item, tab, setTab }: { item: string; tab: string; setTab: (tab: string) => void }) => (
+  <button title={labels[item]} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>
+    <span className="nav-icon">{icons[item]}</span><span className="nav-label">{labels[item]}</span>
+  </button>
+);
+
+function Chats({ chats, activeId, open, start }: { chats: Conversation[]; activeId: string | null; open: (id: string) => void; start: () => void }) {
+  return (
+    <section className="chats">
+      <div className="head">
+        <span className="nav-label">Recent chats</span>
+        <button className="new nav-label" type="button" title="New chat" aria-label="New chat" onClick={start}>+</button>
+      </div>
+      {chats.length
+        ? chats.map(chat => (
+          <button className={`chat${chat.id === activeId ? ' active' : ''}`} key={chat.id} title={chat.title} onClick={() => open(chat.id)}>
+            <span className="mark" aria-hidden="true">↗</span><span className="title nav-label">{chat.title}</span>
+          </button>
+        ))
+        : <p className="none nav-label">No chats yet</p>}
+    </section>
+  );
+}
+
+function Login({ onLogin }: { onLogin: (session: Session) => void }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    try { onLogin(await login(username, password)); } catch { setError('Check your username and password.'); } finally { setBusy(false); }
+  };
+  return (
+    <main className="login">
+      <section>
+        <img src="/assets/lighthouse-logo.png" alt="LightHouse" />
+        <p className="eyebrow">LightHouse local</p>
+        <h1>Understand what your network needs.</h1>
+        <p>Security guidance stays on this appliance.</p>
+        <form onSubmit={submit}>
+          <input aria-label="Username" placeholder="Username" autoComplete="username" required value={username} onChange={e => setUsername(e.target.value)} />
+          <input aria-label="Password" placeholder="Password" type="password" autoComplete="current-password" required value={password} onChange={e => setPassword(e.target.value)} />
+          <button disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+          {error && <p className="error">{error}</p>}
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function ChangePassword({ session, onDone }: { session: Session; onDone: (session: Session) => void }) {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (next !== confirm) { setError('The new passwords do not match.'); return; }
+    if (next.length < 12) { setError('Use at least 12 characters.'); return; }
+    setBusy(true);
+    try { onDone((await api.changePassword(current, next)) || { ...session, must_change_password: false }); }
+    catch (failure) { setError(detailOf(failure, 'Could not change the password. Check the current password and try again.')); }
+    finally { setBusy(false); }
+  };
+  return (
+    <main className="login">
+      <section>
+        <img src="/assets/lighthouse-logo.png" alt="LightHouse" />
+        <p className="eyebrow">LightHouse local</p>
+        <h1>Choose a new password</h1>
+        <p>This appliance printed a one-time password to the server console on first start. Replace it before the dashboard opens.</p>
+        <form onSubmit={submit}>
+          <input aria-label="Current password" placeholder="Current password" type="password" autoComplete="current-password" required value={current} onChange={e => setCurrent(e.target.value)} />
+          <input aria-label="New password" placeholder="New password (at least 12 characters)" type="password" autoComplete="new-password" required minLength={12} value={next} onChange={e => setNext(e.target.value)} />
+          <input aria-label="Confirm new password" placeholder="Confirm new password" type="password" autoComplete="new-password" required minLength={12} value={confirm} onChange={e => setConfirm(e.target.value)} />
+          <button disabled={busy}>{busy ? 'Saving…' : 'Save password'}</button>
+          {error && <p className="error">{error}</p>}
+        </form>
+      </section>
+    </main>
+  );
+}
+
+/* One alert, open or closed. A native details element, so it expands without
+   script and stays keyboard-operable. */
+function AlertItem({ alert, showStatus, canSeeEvidence, act, ask, evidence }: {
+  alert: Alert; showStatus?: boolean; canSeeEvidence: boolean;
+  act: (id: number, status: string) => void; ask: (question: string) => void; evidence: (alert: Alert) => void;
+}) {
+  const isOpen = alert.status === 'open';
+  return (
+    <details className="alert">
+      <summary>
+        <span className={`dot ${alert.severity}`} />
+        <div>
+          <span className={`sev ${alert.severity}`}>{alert.severity}</span>
+          {showStatus && <span className="pill">{alert.status}</span>}
+          <b>{alert.title}</b>
+          <p>{alert.explanation}</p>
+        </div>
+        <span className="when">{when(alert.timestamp)}</span>
+        <span className="chev" aria-hidden="true">▾</span>
+      </summary>
+      <div className="detail">
+        <p className="eyebrow">What this means</p>
+        <p>{alert.explanation}</p>
+        {steps(alert.recommended_action).length > 0 && <>
+          <p className="eyebrow">Recommended steps</p>
+          <ol>{steps(alert.recommended_action).map((step, index) => <li key={index}><b>{step.lead}</b>{step.rest && ` ${step.rest}`}</li>)}</ol>
+        </>}
+        <div className="actions">
+          {isOpen
+            ? <>
+              <button className="btn" onClick={() => act(alert.id, 'resolved')}>Mark resolved</button>
+              <button className="btn quiet" onClick={() => act(alert.id, 'dismissed')}>Dismiss</button>
+            </>
+            : <button className="btn quiet" onClick={() => act(alert.id, 'open')}>Reopen</button>}
+          <button className="btn quiet" onClick={() => ask(`Explain this alert: ${alert.title}`)}>Ask LightHouse about this</button>
+          {canSeeEvidence && <button className="btn quiet" onClick={() => evidence(alert)}>Show evidence</button>}
+        </div>
+        <p className="ai-note">{AI_NOTE}</p>
+      </div>
+    </details>
+  );
+}
+
+type PageProps = {
+  alerts: Alert[]; canSeeEvidence: boolean;
+  act: (id: number, status: string) => void; ask: (question: string) => void; evidence: (alert: Alert) => void;
+};
+
+function Home({ alerts, canSeeEvidence, act, ask, evidence }: PageProps) {
+  const open = alerts.filter(alert => alert.status === 'open');
+  const urgent = open.filter(alert => URGENT.includes(alert.severity)).length;
+  return (
+    <div>
+      <section className="welcome">
+        <p className="eyebrow">Network overview</p>
+        <h1>{urgent ? <>{urgent} item{urgent === 1 ? '' : 's'} deserve{urgent === 1 ? 's' : ''}<br />your attention</> : <>Your network<br />looks healthy</>}</h1>
+        <div className="health">
+          <i className={urgent ? 'warn' : ''} />
+          <b>{urgent ? 'Attention needed' : 'Monitoring active'}</b>
+          <small>{open.length} open alert{open.length === 1 ? '' : 's'}</small>
+        </div>
+      </section>
+      <section className="cards lead">
+        <div><small>Health status</small><strong>{urgent ? 'Review alerts' : 'Good'}</strong><p>Monitoring sources are ready to report.</p></div>
+        <div><small>Open alerts</small><strong>{open.length}</strong><p>Items that have not been resolved.</p></div>
+        <div><small>High priority</small><strong>{urgent}</strong><p>Potentially urgent activity.</p></div>
+      </section>
+      <section className="recent">
+        <div className="head"><p className="eyebrow">Recent activity</p><h2>Latest alerts</h2></div>
+        {alerts.slice(0, 4).map(alert => <AlertItem key={alert.id} alert={alert} canSeeEvidence={canSeeEvidence} act={act} ask={ask} evidence={evidence} />)}
+        {!alerts.length && <div className="empty-state"><b>Nothing to review</b><p>No alerts yet. Run fixture replay to seed the local demo.</p></div>}
+      </section>
+      <section className="common-questions">
+        <p className="eyebrow">Common questions</p>
+        <div className="prompt-cards">
+          {PROMPTS.map(prompt => <button type="button" key={prompt} onClick={() => ask(prompt)}>{prompt} <b aria-hidden="true">↗</b></button>)}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/* An open conversation. Nothing labels the speaker: a question sits in its own
+   card on the right, the answer runs as plain text on the left. */
+function Thread({ chat, thinking }: { chat: Conversation; thinking: boolean }) {
+  return (
+    <div>
+      <p className="eyebrow">Chat</p>
+      <h2>{chat.title}</h2>
+      <div className="thread">
+        {chat.turns.map((turn, index) => (
+          <div className={`turn ${turn.role}`} key={index}>
+            {turn.role === 'them' && <span className="mark" aria-hidden="true" />}
+            {turn.text.split(/\n+/).map((line, line_index) => <p key={line_index}>{line}</p>)}
+          </div>
+        ))}
+        {thinking && <div className="turn them"><span className="mark" aria-hidden="true" /><span className="typing" role="status" aria-label="LightHouse is replying"><i /><i /><i /></span></div>}
+      </div>
+    </div>
+  );
+}
+
+function Alerts({ alerts, canSeeEvidence, act, ask, evidence }: PageProps) {
+  const [filter, setFilter] = useState('all');
+  const counts = {
+    all: alerts.length,
+    open: alerts.filter(alert => alert.status === 'open').length,
+    resolved: alerts.filter(alert => alert.status === 'resolved').length,
+    dismissed: alerts.filter(alert => alert.status === 'dismissed').length,
+  };
+  const visible = filter === 'all' ? alerts : alerts.filter(alert => alert.status === filter);
+  return (
+    <div>
+      <p className="eyebrow">Alerts</p>
+      <h1>Security<br />activity</h1>
+      <p className="lede">Open an alert for a plain-English explanation and the steps LightHouse suggests.</p>
+      <div className="chips">
+        {(['all', 'open', 'resolved', 'dismissed'] as const).map(key => (
+          <button key={key} className={filter === key ? 'on' : ''} onClick={() => setFilter(key)}>
+            {key[0].toUpperCase() + key.slice(1)} {counts[key]}
+          </button>
+        ))}
+      </div>
+      <section className="recent">
+        {visible.map(alert => <AlertItem key={alert.id} alert={alert} showStatus canSeeEvidence={canSeeEvidence} act={act} ask={ask} evidence={evidence} />)}
+        {!visible.length && <div className="empty-state"><b>Nothing to review</b><p>No alerts match this filter.</p></div>}
+      </section>
+    </div>
+  );
+}
+
+type TrendRow = { day: string; severity: string; count: number };
+
+function Trends({ alerts }: { alerts: Alert[] }) {
+  const [rows, setRows] = useState<TrendRow[] | null>(null);
+  useEffect(() => { api.trends().then(setRows).catch(() => setRows([])); }, []);
+
+  /* Seven columns, one per day, each stacked high over medium over low. The chart
+     is 200px tall, so a unit is 200/scale pixels. */
+  const days = useMemo(() => {
+    const byDay = new Map<string, { low: number; medium: number; high: number }>();
+    for (const row of rows || []) {
+      const bucket = byDay.get(row.day) || { low: 0, medium: 0, high: 0 };
+      if (URGENT.includes(row.severity)) bucket.high += row.count;
+      else if (row.severity === 'medium') bucket.medium += row.count;
+      else bucket.low += row.count;
+      byDay.set(row.day, bucket);
+    }
+    return [...byDay.entries()].sort((a, b) => a[0].localeCompare(b[0])).slice(-7)
+      .map(([day, bucket]) => ({ day, ...bucket, total: bucket.low + bucket.medium + bucket.high }));
+  }, [rows]);
+
+  if (!rows) return <Skeleton />;
+  const scale = Math.max(4, ...days.map(day => day.total));
+  const px = (count: number) => `${Math.round((count / scale) * 200)}px`;
+  const label = (day: string) => { const at = new Date(day); return Number.isNaN(at.getTime()) ? day : at.toLocaleDateString([], { weekday: 'short' }); };
+  const week = days.reduce((sum, day) => sum + day.total, 0);
+  const duplicates = alerts.reduce((sum, alert) => sum + (alert.duplicate_count || 0), 0);
+
+  return (
+    <div>
+      <p className="eyebrow">Trends</p>
+      <h1>Alert activity<br />over time</h1>
+      <p className="lede">The last seven days of triaged alerts, grouped by the severity LightHouse assigned.</p>
+      <section className="cards">
+        <div><small>Alerts this week</small><strong>{week}</strong><p>Across the days shown below.</p></div>
+        <div><small>Currently open</small><strong>{alerts.filter(alert => alert.status === 'open').length}</strong><p>Items that have not been resolved.</p></div>
+        <div><small>Duplicates suppressed</small><strong>{duplicates}</strong><p>Folded into existing alerts.</p></div>
+      </section>
+
+      {days.length ? (
+        <div className="chart">
+          <div className="legend">
+            <span><i />Low</span><span className="m"><i />Medium</span><span className="h"><i />High</span>
+          </div>
+          <div className="plot" style={{ ['--days' as string]: days.length }}>
+            <div className="grid">
+              <i style={{ top: 0 }} /><b style={{ top: 0 }}>{scale}</b>
+              <i style={{ top: '50%' }} /><b style={{ top: '50%' }}>{Math.round(scale / 2)}</b>
+              <i style={{ top: '100%' }} /><b style={{ top: '100%' }}>0</b>
+            </div>
+            {days.map(day => (
+              <div className="col" key={day.day}>
+                {day.high > 0 && <span className="h" style={{ height: px(day.high) }}><em>{label(day.day)} · {day.high} high</em></span>}
+                {day.medium > 0 && <span className="m" style={{ height: px(day.medium) }}><em>{label(day.day)} · {day.medium} medium</em></span>}
+                {day.low > 0 && <span style={{ height: px(day.low) }}><em>{label(day.day)} · {day.low} low</em></span>}
+              </div>
+            ))}
+          </div>
+          <div className="xaxis" style={{ ['--days' as string]: days.length }}>{days.map(day => <span key={day.day}>{label(day.day)}</span>)}</div>
+          <details className="table">
+            <summary>Table view</summary>
+            <table>
+              <tbody>
+                <tr><th>Day</th><th>Low</th><th>Medium</th><th>High</th><th>Total</th></tr>
+                {days.map(day => <tr key={day.day}><td>{label(day.day)}</td><td>{day.low}</td><td>{day.medium}</td><td>{day.high}</td><td>{day.total}</td></tr>)}
+              </tbody>
+            </table>
+          </details>
+        </div>
+      ) : <div className="empty-state"><b>No activity yet</b><p>Trend data appears once alerts have been processed.</p></div>}
+    </div>
+  );
+}
+
+type Health = { database?: string; model?: string; platform?: string; load_average?: number[] | null; disk_free_bytes?: number };
+type Device = { device: string; events: number; last_seen: string };
+
+const gigabytes = (bytes?: number) => (bytes ? `${(bytes / 1e9).toFixed(0)} GB` : '—');
+const loads = (health?: Health) => (health?.load_average ? health.load_average.map(value => value.toFixed(2)).join(' · ') : '—');
+
+function useHealth() {
+  const [health, setHealth] = useState<Health>();
+  useEffect(() => { api.health().then(setHealth).catch(() => setHealth({})); }, []);
+  return health;
+}
+
+function Advanced({ selected }: { selected: any }) {
+  const [devices, setDevices] = useState<Device[] | null>(null);
+  const health = useHealth();
+  useEffect(() => { api.devices().then(setDevices).catch(() => setDevices([])); }, []);
+  if (!devices || !health) return <Skeleton />;
+  const events = devices.reduce((sum, device) => sum + device.events, 0);
+  return (
+    <div>
+      <p className="eyebrow">Advanced</p>
+      <h1>Technical<br />workspace</h1>
+      <p className="lede">Raw evidence and model reasoning behind each triaged alert. Analyst and admin only.</p>
+      <section className="cards">
+        <div><small>Events ingested</small><strong>{events.toLocaleString()}</strong><p>Across every monitoring source.</p></div>
+        <div><small>Model</small><strong>{health.model || '—'}</strong><p>Running locally, no external calls.</p></div>
+        <div><small>Devices seen</small><strong>{devices.length}</strong><p>Distinct hosts in the alert record.</p></div>
+      </section>
+
+      <h3>Device activity</h3>
+      <table className="list">
+        <tbody>
+          <tr><th>Device</th><th>Events</th><th>Last seen</th></tr>
+          {devices.slice(0, 12).map(device => (
+            <tr key={device.device}><td><b>{device.device}</b></td><td>{device.events.toLocaleString()}</td><td>{when(device.last_seen)}</td></tr>
+          ))}
+          {!devices.length && <tr><td colSpan={3} className="muted">No device activity recorded yet.</td></tr>}
+        </tbody>
+      </table>
+
+      <h3>Appliance health</h3>
+      <div className="panel">
+        <div className="field"><div><b>Database</b><p>Local SQLite store for alerts and explanations.</p></div><span className="pill">{health.database || 'unknown'}</span></div>
+        <div className="field"><div><b>Model</b><p>Local Ollama endpoint, no external calls.</p></div><span className="pill">{health.model || '—'}</span></div>
+        <div className="field"><div><b>Load average</b><p>1 / 5 / 15 minutes.</p></div><span className="pill">{loads(health)}</span></div>
+        <div className="field"><div><b>Disk free</b><p>Retention trims raw events after 30 days.</p></div><span className="pill">{gigabytes(health.disk_free_bytes)}</span></div>
+      </div>
+
+      <h3>Selected alert evidence</h3>
+      {selected ? <>
+        <p className="lede">{selected.title} — model reasoning</p>
+        <p className="muted">{selected.triage?.reasoning || 'No additional reasoning provided.'}</p>
+        <h3>MITRE ATT&amp;CK</h3>
+        <p className="muted">{selected.mitre?.join(' · ') || 'Not supplied by this source.'}</p>
+        <pre className="evidence">{JSON.stringify(selected.raw, null, 2)}</pre>
+      </> : <p className="muted">Open an alert and choose “Show evidence” to bring its raw record here.</p>}
+    </div>
+  );
+}
+
+function Settings() {
+  const [preferences, setPreferences] = useState<Record<string, string> | null>(null);
+  const [saved, setSaved] = useState('');
+  useEffect(() => { api.preferences().then(setPreferences).catch(() => setPreferences({})); }, []);
+  if (!preferences) return <Skeleton />;
+  const change = (key: string, value: string) => {
+    setPreferences({ ...preferences, [key]: value });
+    api.setPreference(key, value).then(() => setSaved('Saved on this appliance.')).catch(() => setSaved('Could not save that preference.'));
+  };
+  return (
+    <div>
+      <p className="eyebrow">Settings</p>
+      <h1>Your<br />preferences</h1>
+      <p className="lede">These apply to your account only. Appliance-wide options live under Admin.</p>
+      <div className="panel">
+        <div className="field">
+          <div><b>Notification threshold</b><p>The lowest severity that will reach you.</p></div>
+          <select value={preferences.notification_threshold || 'high'} onChange={event => change('notification_threshold', event.target.value)}>
+            <option value="medium">Medium</option><option value="high">High</option><option value="critical">Critical</option>
+          </select>
+        </div>
+        <div className="field">
+          <div><b>Alert sensitivity</b><p>How readily borderline activity becomes an alert.</p></div>
+          <select value={preferences.alert_sensitivity || 'balanced'} onChange={event => change('alert_sensitivity', event.target.value)}>
+            <option value="relaxed">Relaxed</option><option value="balanced">Balanced</option><option value="strict">Strict</option>
+          </select>
+        </div>
+        <div className="field">
+          <div><b>Plain-English explanations</b><p>Show the model&rsquo;s summary above the technical detail.</p></div>
+          <span className="pill">On</span>
+        </div>
+      </div>
+      <h3>Monitoring sources</h3>
+      <div className="panel">
+        <div className="field"><div><b>Suricata</b><p>eve.json &mdash; alert events</p></div><span className="pill">Configured</span></div>
+        <div className="field"><div><b>Zeek</b><p>conn, dns and notice logs, JSON output</p></div><span className="pill">Configured</span></div>
+        <div className="field"><div><b>Wazuh</b><p>alerts.json export</p></div><span className="pill">Configured</span></div>
+      </div>
+      {saved && <p className="notice" role="status">{saved}</p>}
+    </div>
+  );
+}
+
+type User = { id: number; username: string; role: string; must_change_password: boolean };
+
+function Admin({ session }: { session: Session }) {
+  const [users, setUsers] = useState<User[] | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState('owner');
+  const [notice, setNotice] = useState('');
+  const health = useHealth();
+  const loadUsers = () => api.users().then(setUsers).catch(() => setUsers([]));
+  useEffect(() => { loadUsers(); }, []);
+  if (!users || !health) return <Skeleton />;
+  const create = async (event: FormEvent) => {
+    event.preventDefault();
+    setNotice('');
+    try {
+      await api.createUser(username, password, role);
+      setUsername(''); setPassword(''); setRole('owner'); setAdding(false);
+      setNotice('User created. They will be asked to choose their own password at first sign-in.');
+      await loadUsers();
+    } catch (failure) {
+      setNotice(detailOf(failure, 'Unable to create user. Check the username and password requirements.'));
+    }
+  };
+  return (
+    <div>
+      <p className="eyebrow">Administration</p>
+      <h1>Local<br />users</h1>
+      <p className="lede">Accounts exist only on this appliance. There is no cloud directory to sync with.</p>
+      <table className="list">
+        <tbody>
+          <tr><th>User</th><th>Role</th><th>Password</th><th /></tr>
+          {users.map(user => (
+            <tr key={user.id}>
+              <td><b>{user.username}</b></td>
+              <td>{user.role[0].toUpperCase() + user.role.slice(1)}</td>
+              <td>{user.must_change_password ? 'Change required' : 'Set'}</td>
+              <td>{user.username === session.username ? <span className="pill">You</span> : null}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {adding ? (
+        <div className="panel">
+          <form onSubmit={create}>
+            <div className="field">
+              <div><b>Username</b><p>Letters, digits, dot, dash and underscore.</p></div>
+              <input required minLength={3} maxLength={64} pattern="[A-Za-z0-9][A-Za-z0-9._-]*" autoComplete="off" aria-label="Username" value={username} onChange={event => setUsername(event.target.value)} />
+            </div>
+            <div className="field">
+              <div><b>Temporary password</b><p>At least 12 characters. They replace it at first sign-in.</p></div>
+              <input required minLength={12} maxLength={256} type="password" autoComplete="new-password" aria-label="Temporary password" value={password} onChange={event => setPassword(event.target.value)} />
+            </div>
+            <div className="field">
+              <div><b>Access level</b><p>Owners see explanations; analysts and admins also see raw evidence.</p></div>
+              <select aria-label="Access level" value={role} onChange={event => setRole(event.target.value)}>
+                <option value="owner">Owner</option><option value="analyst">Analyst</option><option value="admin">Admin</option>
+              </select>
+            </div>
+            <div className="row-end">
+              <button className="btn quiet" type="button" onClick={() => { setAdding(false); setNotice(''); }}>Cancel</button>
+              <button className="btn">Create user</button>
+            </div>
+          </form>
+        </div>
+      ) : <div className="row-end"><button className="btn" onClick={() => setAdding(true)}>Add user</button></div>}
+      {notice && <p className="notice" role="status">{notice}</p>}
+
+      <h3>Appliance</h3>
+      <div className="panel">
+        <div className="field"><div><b>Platform</b><p>The host this appliance is running on.</p></div><span className="pill">{health.platform || 'unknown'}</span></div>
+        <div className="field"><div><b>Model</b><p>Local Ollama endpoint, no external calls.</p></div><span className="pill">{health.model || '—'}</span></div>
+        <div className="field"><div><b>Load average</b><p>1 / 5 / 15 minutes.</p></div><span className="pill">{loads(health)}</span></div>
+        <div className="field"><div><b>Disk free</b><p>Retention trims raw events after 30 days.</p></div><span className="pill">{gigabytes(health.disk_free_bytes)}</span></div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [session, setSession] = useState(getSession());
+  const [tab, setTab] = useState('home');
+  const [collapsed, setCollapsed] = useState(false);
+  const [alerts, setAlerts] = useState<Alert[] | null>(null);
+  const [selected, setSelected] = useState<any>();
+  const [chats, setChats] = useState<Conversation[]>(() => loadConversations());
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [thinking, setThinking] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const load = () => api.alerts().then(setAlerts).catch(() => setAlerts([]));
+  useEffect(() => { if (session && !session.must_change_password) load(); }, [session]);
+
+  const keep = (next: Conversation[]) => { setChats(next); saveConversations(next); };
+
+  /* A question either continues the open thread or starts a new one; either way it
+     is one row in the sidebar, never one row per message. */
+  const ask = (question: string) => {
+    const text = question.trim();
+    if (!text) return;
+    const turn: Turn = { role: 'me', text };
+    const existing = activeId ? chats.find(chat => chat.id === activeId) : undefined;
+    const chat: Conversation = existing
+      ? { ...existing, turns: [...existing.turns, turn], updated: Date.now() }
+      : { id: newId(), title: titleFor(text), turns: [turn], updated: Date.now() };
+    setActiveId(chat.id);
+    setTab('home');
+    setMessage('');
+    keep([chat, ...chats.filter(entry => entry.id !== chat.id)]);
+    setThinking(true);
+    /* Stands in for the local model call. The delay is what makes the reply read as
+       an answer rather than as part of the page. */
+    setTimeout(() => {
+      setThinking(false);
+      setChats(current => {
+        const next = current.map(entry => entry.id === chat.id
+          ? { ...entry, turns: [...entry.turns, { role: 'them', text: PLACEHOLDER_REPLY } as Turn], updated: Date.now() }
+          : entry);
+        saveConversations(next);
+        return next;
+      });
+    }, 550);
+  };
+
+  const act = async (id: number, status: string) => { await api.setStatus(id, status); load(); };
+  const showEvidence = async (alert: Alert) => { setSelected(await api.detail(alert.id)); setTab('advanced'); };
+
+  if (!session) return <Login onLogin={setSession} />;
+  if (session.must_change_password) return <ChangePassword session={session} onDone={setSession} />;
+
+  const canSeeEvidence = advanced(session.role);
+  const pageProps: PageProps = { alerts: alerts || [], canSeeEvidence, act, ask, evidence: showEvidence };
+  const chat = chats.find(entry => entry.id === activeId);
+  const primary = ['home', 'alerts', 'trends', ...(canSeeEvidence ? ['advanced'] : [])];
+  const send = (event: FormEvent) => { event.preventDefault(); ask(message); };
+  const keydown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); ask(message); }
+  };
+
+  const page = () => {
+    if (!alerts) return <Skeleton />;
+    if (tab === 'home') return chat ? <Thread chat={chat} thinking={thinking} /> : <Home {...pageProps} />;
+    if (tab === 'alerts') return <Alerts {...pageProps} />;
+    if (tab === 'trends') return <Trends alerts={alerts} />;
+    if (tab === 'advanced') return <Advanced selected={selected} />;
+    if (tab === 'settings') return <Settings />;
+    if (tab === 'admin') return <Admin session={session} />;
+    return null;
+  };
+
+  return (
+    <div className={`app${collapsed ? ' collapsed' : ''}`}>
+      <aside>
+        <div className="rail-top">
+          <button className="collapse" title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!collapsed}
+            onClick={() => setCollapsed(!collapsed)}>☰</button>
+        </div>
+        <div className="brand">
+          <img src="/assets/lighthouse-logo.png" alt="LightHouse" />
+          <span className="txt"><b>LightHouse</b><span>Guiding You to Safer Shores</span></span>
+        </div>
+        <nav>{primary.map(item => <Nav key={item} item={item} tab={tab} setTab={setTab} />)}</nav>
+        <Chats chats={chats} activeId={activeId} start={() => { setActiveId(null); setTab('home'); }}
+          open={id => { setActiveId(id); setTab('home'); }} />
+        <nav className="bottom">
+          <Nav item="settings" tab={tab} setTab={setTab} />
+          {session.role === 'admin' && <Nav item="admin" tab={tab} setTab={setTab} />}
+          <button onClick={async () => { await logout(); setSession(null); }}>
+            <span className="nav-icon">⇥</span><span className="nav-label">Sign out</span>
+          </button>
+        </nav>
+      </aside>
+
+      <main className={tab === 'home' ? 'with-dock' : ''}>
+        <div className="sheet">{page()}</div>
+        <div className="dock">
+          <form onSubmit={send}>
+            <textarea rows={1} value={message} onChange={event => setMessage(event.target.value)} onKeyDown={keydown}
+              aria-label="Ask LightHouse" placeholder={chat ? 'Reply to LightHouse…' : 'Ask LightHouse about your network…'} />
+            <button type="submit" aria-label="Send chat">↑</button>
+          </form>
+          <small>LightHouse is AI, it can make mistakes. Chats stay on this appliance for your privacy.</small>
+        </div>
+      </main>
+    </div>
+  );
+}
+
 createRoot(document.getElementById('root')!).render(<App />);
