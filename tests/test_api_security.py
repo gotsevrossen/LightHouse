@@ -205,7 +205,7 @@ def test_must_change_password_blocks_normal_routes(api, client):
                           json={"current_password": "temporary-password", "new_password": "chosen-by-the-user"})
     assert changed.status_code == 200
     assert client.get("/api/alerts", headers=auth(token)).status_code == 200
-    assert client.post("/api/auth/logout", headers=auth(token)).status_code == 200
+    assert client.post("/api/auth/logout", headers=auth(token)).status_code == 204
 
 
 # --- FIX 4: owners never receive raw evidence -------------------------------

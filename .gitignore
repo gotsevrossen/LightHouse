@@ -12,3 +12,7 @@ dashboard/dist/
 .env
 
 dashboard/*.tsbuildinfo
+
+# Windows installer build outputs
+/build/
+/dist/

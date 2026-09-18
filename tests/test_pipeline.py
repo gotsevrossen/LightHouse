@@ -43,6 +43,11 @@ def test_admin_user_validation_and_logout(tmp_path, monkeypatch):
     token = login.json()["token"]
     headers = {"Authorization": f"Bearer {token}"}
 
+    changed = client.post("/api/auth/password", headers=headers,
+                          json={"current_password": seeded_password,
+                                "new_password": "chosen-admin-passphrase"})
+    assert changed.status_code == 200
+
     weak = client.post(
         "/api/users",
         headers=headers,

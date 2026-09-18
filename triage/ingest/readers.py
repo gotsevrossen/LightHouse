@@ -52,7 +52,15 @@ def parse_record(source: Source, raw: dict[str, Any]) -> NormalizedAlert:
     if source is Source.SURICATA:
         alert = raw.get("alert")
         if not isinstance(alert, dict):
-            raise ValueError("Suricata record has no alert object")
+            event_type = raw.get("event_type")
+            if event_type not in {"flow", "http", "tls", "dns", "smb"}:
+                raise ValueError("Suricata record has no alert object or supported protocol event")
+            return NormalizedAlert(source=source,
+                source_event_id=str(raw.get("flow_id", "")) or None,
+                timestamp=raw["timestamp"], title=f"Suricata {event_type} activity",
+                source_ip=raw.get("src_ip"), destination_ip=raw.get("dest_ip"),
+                device=raw.get("src_ip"), rule_id=f"eve:{event_type}",
+                sensor_severity=Severity.LOW, raw=raw)
         mitre = [entry.get("technique_id") for entry in alert.get("metadata", {}).get("mitre", []) if entry.get("technique_id")]
         return NormalizedAlert(source=source, source_event_id=str(raw.get("flow_id", "")) or None,
             timestamp=raw["timestamp"], title=alert.get("signature", "Unnamed Suricata alert"), source_ip=raw.get("src_ip"),

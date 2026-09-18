@@ -1,0 +1,205 @@
+﻿"""Native Windows inputs; imports of pywin32 stay lazy for Linux installs/tests."""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import sys
+from pathlib import Path
+import xml.etree.ElementTree as ET
+
+from .readers import parse_record
+from ..schema import Source
+
+logger = logging.getLogger(__name__)
+NS = {"e": "http://schemas.microsoft.com/win/2004/08/events/event"}
+SECURITY = {4624: ("Successful logon", 3), 4625: ("Failed logon", 7),
+            4648: ("Explicit credentials logon", 3), 4672: ("Privileged logon", 3),
+            4720: ("User account created", 7), 4726: ("User account deleted", 7),
+            4732: ("Member added to local security group", 7),
+            1102: ("Security audit log cleared", 10)}
+SYSMON = {1: "Process created", 3: "Network connection", 6: "Driver loaded",
+          8: "Remote thread created", 10: "Process access", 11: "File created",
+          12: "Registry object changed", 13: "Registry value set", 22: "DNS query",
+          25: "Process tampering", 26: "File deleted", 29: "Executable detected"}
+
+
+def configured_channels() -> list[str]:
+    return list(dict.fromkeys(value for value in (
+        os.getenv("LIGHTHOUSE_SYSMON_CHANNEL", "Microsoft-Windows-Sysmon/Operational").strip(),
+        os.getenv("LIGHTHOUSE_SECURITY_CHANNEL", "Security").strip()) if value))
+
+
+def event_identity(xml: str) -> dict:
+    root = ET.fromstring(xml)
+    return {"id": int(root.findtext("e:System/e:EventRecordID", namespaces=NS)),
+            "time": root.find("e:System/e:TimeCreated", NS).attrib["SystemTime"]}
+
+
+def normalize_event(xml: str):
+    """Adapt to the existing Wazuh host-alert shape, retaining native provenance.
+
+    Windows event levels describe logging importance, not threat severity. Use
+    explicit policy floors; routine telemetry remains LOW. No new DB/UI source
+    enum is required, and no Wazuh process is used on Windows.
+    """
+    root = ET.fromstring(xml)
+    system = root.find("e:System", NS)
+    event_id = int(system.findtext("e:EventID", namespaces=NS))
+    channel = system.findtext("e:Channel", namespaces=NS)
+    provider = system.find("e:Provider", NS).attrib["Name"]
+    data = {item.attrib.get("Name", str(i)): item.text or ""
+            for i, item in enumerate(root.findall("e:EventData/e:Data", NS))}
+    if provider == "Microsoft-Windows-Security-Auditing":
+        if event_id not in SECURITY:
+            return None
+        title, level = SECURITY[event_id]
+    elif provider == "Microsoft-Windows-Sysmon":
+        title = SYSMON.get(event_id, f"Event {event_id}")
+        level = 10 if event_id == 25 else 3
+    else:
+        return None
+    identity = event_identity(xml)
+    raw = {"timestamp": identity["time"],
+           "id": f"{channel}:{identity['id']}:{identity['time']}",
+           "rule": {"id": f"{provider}:{event_id}", "description": f"{provider}: {title}", "level": level},
+           "agent": {"name": system.findtext("e:Computer", namespaces=NS)},
+           "data": {"srcip": data.get("SourceIp") or data.get("IpAddress"),
+                    "win": {"channel": channel, "provider": provider, "event_id": event_id,
+                            "record_id": identity["id"], "eventdata": data}}}
+    alert = parse_record(Source.WAZUH, raw)
+    return alert.model_copy(update={"destination_ip": data.get("DestinationIp")})
+
+
+class EventLogReader:
+    def __init__(self, channel: str):
+        import win32evtlog
+        import pywintypes
+        self.api = win32evtlog
+        self.error = pywintypes.error
+        self.channel = channel
+
+    def read(self, query="*", reverse=False, count=32):
+        api = self.api
+        flags = api.EvtQueryChannelPath | (api.EvtQueryReverseDirection if reverse else api.EvtQueryForwardDirection)
+        handle = api.EvtQuery(self.channel, flags, query)
+        try:
+            try:
+                events = api.EvtNext(handle, count)
+            except self.error as error:
+                if getattr(error, "winerror", None) == 259:  # ERROR_NO_MORE_ITEMS
+                    return []
+                raise
+            try:
+                return [api.EvtRender(event, api.EvtRenderEventXml) for event in events]
+            finally:
+                for event in events:
+                    event.Close()
+        finally:
+            handle.Close()
+
+
+async def tail_channel(service, channel: str, *, reader=None, state_dir=None, poll_seconds=1):
+    reader = reader or EventLogReader(channel)
+    directory = Path(state_dir or os.getenv("LIGHTHOUSE_EVENT_STATE_DIR") or
+                     Path(os.getenv("PROGRAMDATA", r"C:\ProgramData")) / "LightHouse" / "state")
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / (hashlib.sha256(channel.encode()).hexdigest()[:20] + ".json")
+    cursor = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+    def save(identity):
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(identity), encoding="utf-8")
+        temporary.replace(path)
+
+    while True:
+        try:
+            if cursor is None:
+                # First start follows new events; subsequent starts resume after
+                # the last committed event, including events emitted while down.
+                latest = await asyncio.to_thread(reader.read, "*", True, 1)
+                cursor = event_identity(latest[0]) if latest else {"id": 0, "time": ""}
+                save(cursor)
+            if cursor["id"]:
+                anchor = await asyncio.to_thread(reader.read, f"*[System[EventRecordID={cursor['id']}]]", False, 1)
+                if not anchor or event_identity(anchor[0]) != cursor:
+                    logger.warning("%s cleared or rolled over; resuming retained events", channel)
+                    cursor = {"id": 0, "time": ""}
+            events = await asyncio.to_thread(reader.read, f"*[System[EventRecordID>{cursor['id']}]]")
+            for xml in events:
+                identity = event_identity(xml)
+                try:
+                    alert = normalize_event(xml)
+                except (ValueError, KeyError, AttributeError, ET.ParseError):
+                    logger.exception("Skipping malformed event in %s record %s", channel, identity["id"])
+                    alert = None
+                if alert is not None:
+                    await service.process(alert)
+                # A failed DB/model call never advances the checkpoint.
+                save(identity)
+                cursor = identity
+            if not events:
+                await asyncio.sleep(poll_seconds)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Windows channel %s failed; retrying", channel)
+            await asyncio.sleep(max(poll_seconds, 5))
+
+
+async def tail_windows_json_lines(path, source):
+    """Wait for the sensor, follow partial writes and reopen on rotation/truncate."""
+    handle = None
+    identity = None
+    pending = ""
+    first = True
+    try:
+        while True:
+            try:
+                stat = path.stat()
+                current = (stat.st_dev, stat.st_ino)
+                if handle is None or current != identity or stat.st_size < handle.tell():
+                    if handle is not None:
+                        handle.close()
+                    handle = _open_shared_log(path)
+                    identity, pending = current, ""
+                    if first:
+                        handle.seek(0, 2)
+                        first = False
+                chunk = handle.readline()
+                if chunk:
+                    pending += chunk
+                    if pending.endswith("\n"):
+                        line, pending = pending, ""
+                        try:
+                            yield parse_record(source, json.loads(line))
+                        except (ValueError, KeyError, TypeError):
+                            logger.warning("Skipping malformed/unsupported EVE record")
+                    continue
+            except OSError:
+                if handle is not None:
+                    handle.close()
+                    handle = None
+            await asyncio.sleep(0.5)
+    finally:
+        if handle is not None:
+            handle.close()
+
+
+def _open_shared_log(path):
+    if sys.platform != "win32":
+        return path.open(encoding="utf-8")
+    import msvcrt
+    import win32file
+    import win32con
+    import pywintypes
+    try:
+        native = win32file.CreateFile(str(path), win32con.GENERIC_READ,
+            win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+            None, win32con.OPEN_EXISTING, win32con.FILE_ATTRIBUTE_NORMAL, None)
+    except pywintypes.error as error:
+        raise OSError(error.winerror, error.strerror, str(path)) from error
+    fd = msvcrt.open_osfhandle(native.Detach(), os.O_RDONLY | os.O_BINARY)
+    return os.fdopen(fd, encoding="utf-8")

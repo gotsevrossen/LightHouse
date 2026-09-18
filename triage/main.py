@@ -24,7 +24,7 @@ SOURCE_ENV_VARS: dict[Source, str] = {
 def build_model(mock: bool) -> TriageModel:
     if mock:
         return FixtureTriageModel()
-    return OllamaTriageModel(os.getenv("LIGHTHOUSE_MODEL", "qwen3:8b"),
+    return OllamaTriageModel(os.getenv("LIGHTHOUSE_MODEL", "phi4-mini" if sys.platform == "win32" else "qwen3:8b"),
                              os.getenv("LIGHTHOUSE_OLLAMA_URL", "http://localhost:11434"))
 
 
@@ -38,7 +38,11 @@ def configured_sources() -> dict[Source, Path]:
     """Sensors with a path set. Anything unset is simply not ingested."""
     configured: dict[Source, Path] = {}
     for source, variable in SOURCE_ENV_VARS.items():
+        if sys.platform == "win32" and source is not Source.SURICATA:
+            continue
         value = (os.getenv(variable) or "").strip()
+        if sys.platform == "win32" and source is Source.SURICATA and variable not in os.environ:
+            value = r"C:\Suricata\log\eve.json"
         if value:
             configured[source] = Path(value)
     return configured
@@ -56,7 +60,11 @@ async def replay(mock: bool) -> None:
 async def _tail_source(service: TriageService, source: Source, path: Path) -> None:
     print(f"tailing {source}: {path}", flush=True)
     try:
-        async for alert in tail_json_lines(path, source):
+        reader = tail_json_lines
+        if sys.platform == "win32":
+            from .ingest.windows import tail_windows_json_lines
+            reader = tail_windows_json_lines
+        async for alert in reader(path, source):
             try:
                 alert_id, duplicate = await service.process(alert)
             except Exception as error:  # one bad record must not stop the sensor
@@ -97,6 +105,10 @@ async def run_ingestion(service: TriageService, configured: dict[Source, Path]) 
     """
     tasks = [asyncio.create_task(_tail_source(service, source, path), name=str(source))
              for source, path in configured.items()]
+    if sys.platform == "win32":
+        from .ingest.windows import configured_channels, tail_channel
+        tasks.extend(asyncio.create_task(tail_channel(service, channel), name=channel)
+                     for channel in configured_channels())
     try:
         await asyncio.gather(*tasks)
     finally:
@@ -113,10 +125,12 @@ async def run_ingestion(service: TriageService, configured: dict[Source, Path]) 
 async def tail(mock: bool) -> None:
     """Follow every configured sensor log at once and triage each new record."""
     configured = configured_sources()
-    if not configured:
+    from .ingest.windows import configured_channels
+    windows_channels = configured_channels() if sys.platform == "win32" else []
+    if not configured and not windows_channels:
         raise SystemExit("No sensor log paths configured. Set at least one of: " + ", ".join(SOURCE_ENV_VARS.values()))
     unreadable = unreadable_sources(configured)
-    if unreadable:
+    if unreadable and sys.platform != "win32":
         raise SystemExit("Cannot read configured sensor log: " + "; ".join(unreadable))
     await run_ingestion(build_service(mock), configured)
 

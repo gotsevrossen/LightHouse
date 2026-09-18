@@ -2,7 +2,9 @@
 
 LightHouse turns local Suricata, Zeek, and Wazuh records into validated, plain-English security guidance. Everything — the monitoring data and the AI inference — stays on your own machine. Nothing is sent to a remote service.
 
-It ships as a normal Linux desktop application: install it, find it in your applications menu, double-click it, see a window.
+Windows is the primary deployment target: native Suricata/Npcap, Sysmon and Windows Security events, Ollama, and NSSM services. Build the double-clickable `dist/LightHouse-Setup.exe` with `packaging/windows/build.ps1`. See [Windows installation and validation status](docs/windows-install.md). Free Npcap requires its interactive wizard; fully unattended setup needs preinstalled Npcap or its OEM installer. Full-stack installation and repair testing remain outstanding.
+
+The existing Linux desktop application remains supported by the instructions below.
 
 ---
 
