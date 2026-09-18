@@ -253,3 +253,22 @@ def test_no_cors_headers_without_configured_origins(client):
     response = client.get("/health", headers={"Origin": "http://192.168.1.99:5173"})
     assert response.status_code == 200
     assert "access-control-allow-origin" not in {k.lower() for k in response.headers}
+
+
+def test_ingestion_health_requires_analyst_and_reports_failure(api, client, tmp_path, monkeypatch):
+    from triage.ingest.health import report
+    # Event Log readers, and so their health, exist only on Windows.
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setenv('LIGHTHOUSE_EVENT_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('LIGHTHOUSE_SYSMON_CHANNEL', '')
+    monkeypatch.setenv('LIGHTHOUSE_SECURITY_CHANNEL', 'Security')
+    assert client.get('/api/advanced/ingestion').status_code in (401, 403)
+    api.db.create_user('health-owner', OWNER_PASSWORD, 'owner')
+    api.db.create_user('health-analyst', ANALYST_PASSWORD, 'analyst')
+    owner = login(client, 'health-owner', OWNER_PASSWORD)
+    analyst = login(client, 'health-analyst', ANALYST_PASSWORD)
+    assert client.get('/api/advanced/ingestion', headers=auth(owner)).status_code == 403
+    report(tmp_path / 'state', 'Security', 'error')
+    response = client.get('/api/advanced/ingestion', headers=auth(analyst))
+    assert response.status_code == 200
+    assert response.json() == {'ok': False, 'channels': {'Security': 'error'}}

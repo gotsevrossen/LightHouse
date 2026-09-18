@@ -62,6 +62,8 @@ class NormalizedAlert(BaseModel):
     destination_ip: str | None = None
     device: str | None = None
     rule_id: str | None = None
+    # Input-specific discriminator, used only for deduplication (not public API).
+    dedupe_key: str | None = None
     mitre: list[str] = Field(default_factory=list)
     # Severity the sensor itself reported, derived deterministically in the readers.
     # It is the floor the model is not allowed to undercut. LOW is the safe default:

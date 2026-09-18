@@ -8,4 +8,6 @@ from .schema import NormalizedAlert
 def fingerprint(alert: NormalizedAlert) -> str:
     """Stable identity for repeat detector hits, intentionally excluding timestamp."""
     values = [alert.source, alert.rule_id or alert.title, alert.source_ip or "", alert.destination_ip or "", alert.device or ""]
+    if alert.dedupe_key is not None:
+        values.append(alert.dedupe_key)
     return hashlib.sha256("|".join(values).encode()).hexdigest()

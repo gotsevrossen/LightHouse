@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+from . import health
 from .readers import parse_record
 from ..schema import Source
 
@@ -24,6 +25,16 @@ SYSMON = {1: "Process created", 3: "Network connection", 6: "Driver loaded",
           8: "Remote thread created", 10: "Process access", 11: "File created",
           12: "Registry object changed", 13: "Registry value set", 22: "DNS query",
           25: "Process tampering", 26: "File deleted", 29: "Executable detected"}
+# Per-occurrence identifiers, timestamps and ephemeral ports. They differ on every
+# event (each logon attempt has a new IpPort/LogonId, each process a new GUID),
+# so hashing them would make every event unique and switch deduplication off.
+VOLATILE_FIELDS = frozenset({
+    "UtcTime", "CreationUtcTime", "PreviousCreationUtcTime",
+    "ProcessGuid", "ProcessId", "ParentProcessGuid", "ParentProcessId",
+    "SourceProcessGuid", "SourceProcessGUID", "SourceProcessId", "SourceThreadId",
+    "TargetProcessGuid", "TargetProcessGUID", "TargetProcessId", "NewThreadId", "StartAddress",
+    "LogonGuid", "LogonId", "TargetLogonGuid", "SubjectLogonId", "TargetLogonId", "TargetLinkedLogonId",
+    "SourcePort", "SourcePortName", "IpPort", "QueryResults"})
 
 
 def configured_channels() -> list[str]:
@@ -52,7 +63,14 @@ def normalize_event(xml: str):
     provider = system.find("e:Provider", NS).attrib["Name"]
     data = {item.attrib.get("Name", str(i)): item.text or ""
             for i, item in enumerate(root.findall("e:EventData/e:Data", NS))}
-    if provider == "Microsoft-Windows-Security-Auditing":
+    # Eventlog 1102 uses UserData/LogFileCleared in a different XML namespace.
+    user_data = root.find("e:UserData", NS)
+    if user_data is not None:
+        data.update({item.tag.rsplit("}", 1)[-1]: item.text or ""
+                     for item in user_data.iter() if len(item) == 0})
+    if provider == "Microsoft-Windows-Eventlog" and channel == "Security" and event_id == 1102:
+        title, level = SECURITY[1102]
+    elif provider == "Microsoft-Windows-Security-Auditing":
         if event_id not in SECURITY:
             return None
         title, level = SECURITY[event_id]
@@ -70,7 +88,12 @@ def normalize_event(xml: str):
                     "win": {"channel": channel, "provider": provider, "event_id": event_id,
                             "record_id": identity["id"], "eventdata": data}}}
     alert = parse_record(Source.WAZUH, raw)
-    return alert.model_copy(update={"destination_ip": data.get("DestinationIp")})
+    # Distinguish by what happened (command lines, images, accounts, target paths,
+    # remote addresses), so repeats of one activity dedupe and different activity
+    # on the same host does not.
+    evidence = {key: value for key, value in data.items() if key not in VOLATILE_FIELDS}
+    key = hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest()
+    return alert.model_copy(update={"destination_ip": data.get("DestinationIp"), "dedupe_key": key})
 
 
 class EventLogReader:
@@ -103,16 +126,12 @@ class EventLogReader:
 
 async def tail_channel(service, channel: str, *, reader=None, state_dir=None, poll_seconds=1):
     reader = reader or EventLogReader(channel)
-    directory = Path(state_dir or os.getenv("LIGHTHOUSE_EVENT_STATE_DIR") or
-                     Path(os.getenv("PROGRAMDATA", r"C:\ProgramData")) / "LightHouse" / "state")
+    directory = Path(state_dir or health.state_directory())
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / (hashlib.sha256(channel.encode()).hexdigest()[:20] + ".json")
+    path = directory / health.channel_filename(channel)
+    status = health.ChannelHealth(directory, channel)
+    status.set("starting")
     cursor = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
-
-    def save(identity):
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(identity), encoding="utf-8")
-        temporary.replace(path)
 
     while True:
         try:
@@ -121,13 +140,18 @@ async def tail_channel(service, channel: str, *, reader=None, state_dir=None, po
                 # the last committed event, including events emitted while down.
                 latest = await asyncio.to_thread(reader.read, "*", True, 1)
                 cursor = event_identity(latest[0]) if latest else {"id": 0, "time": ""}
-                save(cursor)
+                health.write_json(path, cursor)
             if cursor["id"]:
                 anchor = await asyncio.to_thread(reader.read, f"*[System[EventRecordID={cursor['id']}]]", False, 1)
                 if not anchor or event_identity(anchor[0]) != cursor:
                     logger.warning("%s cleared or rolled over; resuming retained events", channel)
                     cursor = {"id": 0, "time": ""}
             events = await asyncio.to_thread(reader.read, f"*[System[EventRecordID>{cursor['id']}]]")
+            # A successful read proves channel access without waiting for model
+            # triage of the backlog. After a failure, stay in error until a
+            # pending event is actually processed.
+            if not events or status.status != "error":
+                status.set("ok")
             for xml in events:
                 identity = event_identity(xml)
                 try:
@@ -138,13 +162,16 @@ async def tail_channel(service, channel: str, *, reader=None, state_dir=None, po
                 if alert is not None:
                     await service.process(alert)
                 # A failed DB/model call never advances the checkpoint.
-                save(identity)
+                health.write_json(path, identity)
                 cursor = identity
+                status.set("ok")
             if not events:
                 await asyncio.sleep(poll_seconds)
         except asyncio.CancelledError:
+            status.set("stopped")
             raise
         except Exception:
+            status.set("error")
             logger.exception("Windows channel %s failed; retrying", channel)
             await asyncio.sleep(max(poll_seconds, 5))
 

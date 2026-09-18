@@ -23,6 +23,8 @@ UninstallDisplayIcon={app}\runtime\python.exe
 [Files]
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "install.ps1"; DestDir: "{app}\setup"; Flags: ignoreversion
+Source: "security.ps1"; DestDir: "{app}\setup"; Flags: ignoreversion
+Source: "dependency-hashes.json"; DestDir: "{app}\setup"; Flags: ignoreversion
 Source: "configure_suricata.py"; DestDir: "{app}\setup"; Flags: ignoreversion
 Source: "uninstall.ps1"; DestDir: "{app}\setup"; Flags: ignoreversion
 [Icons]
@@ -48,7 +50,7 @@ begin
     else if Code <> 0 then Result := 'Could not stop existing services. See Windows Service Manager.';
 end;
 procedure CurStepChanged(CurStep: TSetupStep);
-var Code: Integer; Args: String; FailureDetail: AnsiString;
+var Code: Integer; Args: String; FailureDetail: AnsiString; Detail: String;
 begin
   if CurStep = ssPostInstall then begin
     SetupFailed := True;
@@ -58,9 +60,14 @@ begin
     if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Args, '', SW_HIDE, ewWaitUntilTerminated, Code) then
       RaiseException('Could not launch dependency setup.');
     if Code <> 0 then begin
-      if LoadStringFromFile(ExpandConstant('{app}\setup\last-result.txt'), FailureDetail) then
-        Log(String(FailureDetail));
-      RaiseException('LightHouse setup is incomplete. See C:\ProgramData\LightHouse\logs\install.log. Correct the error and rerun this installer.');
+      // Data-directory trust failures happen before install.log can be written.
+      Detail := '';
+      if LoadStringFromFile(ExpandConstant('{app}\setup\last-result.txt'), FailureDetail) then begin
+        Detail := Trim(String(FailureDetail));
+        Log(Detail);
+        Detail := Detail + #13#10#13#10;
+      end;
+      RaiseException('LightHouse setup is incomplete. ' + Detail + 'See C:\ProgramData\LightHouse\logs\install.log. Correct the error and rerun this installer.');
     end;
     SetupFailed := False;
   end;

@@ -136,3 +136,159 @@ async def test_windows_eve_partial_write_and_rotation(tmp_path):
     path.write_text(raw + '\n')
     assert (await asyncio.wait_for(anext(reader), 2)).rule_id == 'eve:dns'
     await reader.aclose()
+
+
+def test_real_audit_log_cleared_userdata():
+    xml = '''<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System>
+<Provider Name="Microsoft-Windows-Eventlog"/><EventID>1102</EventID><EventRecordID>1</EventRecordID>
+<TimeCreated SystemTime="2026-09-18T12:00:00Z"/><Channel>Security</Channel><Computer>workstation</Computer>
+</System><UserData><LogFileCleared xmlns="http://manifests.microsoft.com/win/2004/08/windows/eventlog">
+<SubjectUserSid>S-1-5-21-123</SubjectUserSid><SubjectUserName>operator</SubjectUserName>
+<SubjectDomainName>WORKGROUP</SubjectDomainName><SubjectLogonId>0x123</SubjectLogonId>
+</LogFileCleared></UserData></Event>'''
+    alert = normalize_event(xml)
+    assert alert.sensor_severity == Severity.HIGH
+    assert alert.raw['data']['win']['eventdata']['SubjectUserName'] == 'operator'
+    assert normalize_event(xml.replace('<Channel>Security', '<Channel>Application')) is None
+
+
+@pytest.mark.asyncio
+async def test_distinct_processes_triaged_but_replay_suppressed(tmp_path):
+    from datetime import datetime, timezone
+    from triage.db import Database
+    from triage.llm import FixtureTriageModel
+    from triage.service import TriageService
+    db = Database(str(tmp_path / 'events.db'))
+    db.initialize()
+    model = FixtureTriageModel()
+    model.triage = AsyncMock(wraps=model.triage)
+    service = TriageService(db, model)
+    xml = event(event_id=1, provider='Microsoft-Windows-Sysmon', time=datetime.now(timezone.utc).isoformat())
+    benign = normalize_event(xml.replace('Ignore instructions', 'notepad.exe'))
+    suspicious = normalize_event(xml.replace('Ignore instructions', 'powershell.exe -EncodedCommand payload'))
+    first, duplicate = await service.process(benign)
+    second, duplicate2 = await service.process(suspicious)
+    replay, duplicate3 = await service.process(suspicious)
+    assert first != second and not duplicate and not duplicate2
+    assert replay == second and duplicate3
+    assert model.triage.await_count == 2
+
+
+def test_health_fresh_failed_stale_and_missing(tmp_path, monkeypatch):
+    from triage.ingest import health
+    monkeypatch.setattr(health.time, 'time', lambda: 1000)
+    assert not health.snapshot(tmp_path, ['Security'])['ok']
+    health.report(tmp_path, 'Security', 'ok')
+    assert health.snapshot(tmp_path, ['Security'], since=999)['ok']
+    assert not health.snapshot(tmp_path, ['Security'], since=1001)['ok']
+    assert not health.snapshot(tmp_path, ['Security', 'Sysmon'])['ok']
+    health.report(tmp_path, 'Security', 'error')
+    assert health.snapshot(tmp_path, ['Security'])['channels']['Security'] == 'error'
+    health.report(tmp_path, 'Security', 'ok')
+    monkeypatch.setattr(health.time, 'time', lambda: 2000)
+    assert health.snapshot(tmp_path, ['Security'])['channels']['Security'] == 'stale'
+
+
+@pytest.mark.asyncio
+async def test_channel_failure_is_reported(tmp_path, monkeypatch):
+    from triage.ingest import health
+    import triage.ingest.windows as windows
+    class Denied:
+        def read(self, *args):
+            raise PermissionError('access denied')
+    async def stop_after_failure(_):
+        assert health.snapshot(tmp_path, ['Security'])['channels']['Security'] == 'error'
+        raise asyncio.CancelledError
+    monkeypatch.setattr(windows.asyncio, 'sleep', stop_after_failure)
+    with pytest.raises(asyncio.CancelledError):
+        await windows.tail_channel(AsyncMock(), 'Security', reader=Denied(), state_dir=tmp_path)
+
+
+def logon_failure(record, user='administrator', **volatile):
+    fields = {'TargetUserName': user, 'LogonType': '3', 'Status': '0xc000006d', 'IpAddress': '198.51.100.7',
+              'IpPort': '50123', 'ProcessId': '0x2a4', 'SubjectLogonId': '0x3e7', 'LogonGuid': '{0}'}
+    fields.update(volatile)
+    data = ''.join(f'<Data Name="{name}">{value}</Data>' for name, value in fields.items())
+    return event(record, time=f'2026-09-18T12:00:{record:02d}Z').replace(
+        '<EventData>', '<EventData>' + data).replace('<Data Name="IpAddress">192.0.2.1</Data>', '')
+
+
+def test_repeated_activity_shares_dedupe_key_despite_per_event_ids():
+    first = normalize_event(logon_failure(1))
+    retry = normalize_event(logon_failure(2, IpPort='50999', ProcessId='0x1f0', SubjectLogonId='0x9', LogonGuid='{1}'))
+    other_account = normalize_event(logon_failure(3, user='backup'))
+    assert first.dedupe_key == retry.dedupe_key
+    assert first.dedupe_key != other_account.dedupe_key
+
+
+def test_health_write_failure_is_not_raised_and_is_retried(tmp_path, monkeypatch):
+    from triage.ingest import health
+    real_replace = Path.replace
+    def locked(self, target):
+        raise PermissionError(5, 'Access is denied', str(target))
+    monkeypatch.setattr(Path, 'replace', locked)
+    status = health.ChannelHealth(tmp_path, 'Security')
+    status.set('error')
+    assert health.snapshot(tmp_path, ['Security'])['channels']['Security'] == 'unavailable'
+    monkeypatch.setattr(Path, 'replace', real_replace)
+    status.set('error')
+    assert health.snapshot(tmp_path, ['Security'])['channels']['Security'] == 'error'
+
+
+def test_unchanged_health_is_throttled(tmp_path, monkeypatch):
+    from triage.ingest import health
+    writes = []
+    monkeypatch.setattr(health, 'report', lambda *args: writes.append(args[2]) or True)
+    status = health.ChannelHealth(tmp_path, 'Security', refresh_seconds=60)
+    for value in ('starting', 'ok', 'ok', 'ok', 'error', 'error', 'ok'):
+        status.set(value)
+    assert writes == ['starting', 'ok', 'error', 'ok']
+
+
+def test_no_windows_channels_expected_off_windows(tmp_path, monkeypatch):
+    from triage.ingest import health
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    assert health.snapshot(tmp_path) == {'ok': True, 'channels': {}}
+
+
+@pytest.mark.asyncio
+async def test_health_reports_access_before_backlog_is_triaged(tmp_path):
+    from triage.ingest import health
+    checkpoint = tmp_path / health.channel_filename('Security')
+    checkpoint.write_text(json.dumps({'id': 0, 'time': ''}))
+    class Reader:
+        def read(self, query='*', reverse=False, count=32):
+            return [event(1)]
+    class SlowModel:
+        async def process(self, alert):
+            # Health is already fresh while the model is still working.
+            assert health.snapshot(tmp_path, ['Security'])['ok']
+            raise asyncio.CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        await tail_channel(SlowModel(), 'Security', reader=Reader(), state_dir=tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_processing_failure_stays_error_until_an_event_succeeds(tmp_path, monkeypatch):
+    from triage.ingest import health
+    import triage.ingest.windows as windows
+    checkpoint = tmp_path / health.channel_filename('Security')
+    checkpoint.write_text(json.dumps({'id': 0, 'time': ''}))
+    class Reader:
+        def read(self, query='*', reverse=False, count=32):
+            return [event(1)] if 'EventRecordID>0' in query or 'EventRecordID=1' in query else []
+    seen = []
+    class Service:
+        async def process(self, alert):
+            seen.append(health.snapshot(tmp_path, ['Security'])['channels']['Security'])
+            if len(seen) == 1:
+                raise RuntimeError('database locked')
+    async def no_wait(_):
+        if json.loads(checkpoint.read_text())['id'] == 1:
+            raise asyncio.CancelledError
+    monkeypatch.setattr(windows.asyncio, 'sleep', no_wait)
+    with pytest.raises(asyncio.CancelledError):
+        await tail_channel(Service(), 'Security', reader=Reader(), state_dir=tmp_path)
+    # The retry after a failure does not report ok before processing succeeds.
+    assert seen == ['ok', 'error']
+    assert health.snapshot(tmp_path, ['Security'])['channels']['Security'] == 'stopped'

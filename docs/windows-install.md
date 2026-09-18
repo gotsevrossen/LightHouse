@@ -95,8 +95,37 @@ settings in place, reapplies the existing Sysmon XML, regenerates Suricata YAML
 from the vendor file and JSON, validates it with `suricata -T`, and starts services
 in dependency order. ET Open's currently published Suricata 7.0.3 rule archive is
 used with Suricata 8; setup validates the resulting rules/configuration. Download
-SHA256 values are recorded in the transcript. Successful downloads are cached;
-remove a particular cache file as administrator to refresh that dependency.
+SHA256 values are recorded in the transcript and executable packages (including
+cached copies) are checked against `packaging/windows/dependency-hashes.json`.
+Ollama and an operator-supplied Npcap OEM installer must have a valid Authenticode
+signature from the expected publisher. Sysmon is published only at a fixed
+latest-release URL, so instead of a hash its `Sysmon64.exe` must carry a valid
+Microsoft signature and the Sysinternals Sysmon product name. OEM files are copied
+into the protected cache before verification/execution. NSSM is restored from its
+verified archive on repair. The build also checks the embedded Python archive
+against a pinned hash and installs Python wheels only with the hashes in `uv.lock`.
+Downloads are verified before they enter the cache; a download or cached copy
+that fails verification is discarded and fetched again on the next run.
+
+Pins were established from the official vendor downloads on 2026-09-18. Updating
+a pinned dependency requires reviewing its vendor release and updating the
+committed hash; mismatches fail closed. Never update a pin simply to accept a
+failed download. Rule/config text downloads are not executable
+packages and continue to use HTTPS and the existing configuration validation.
+
+The data tree receives a complete Administrators/SYSTEM-only DACL and trusted
+ownership, including existing children. Setup rejects reparse points, untrusted
+ownership, and preexisting untrusted write permissions (including generic-rights
+entries) before consuming files. SYSTEM and Administrators are trusted owners.
+When setup runs with a full, unsplit admin token (the built-in Administrator, or
+UAC turned off), the account running it is trusted too: such accounts own what they
+create and never run reduced-rights programs. Elevated UAC admins are not, since
+their normal programs run as the same account without admin rights. At the end of every run, successful or
+not, setup hands what it created to Administrators so any administrator can repair.
+A rejection is shown in the setup error and `last-result.txt`; it happens before
+`install.log` is opened. If rejected, preserve the old tree separately and
+reinstall into a clean location; do not blindly copy potentially modified
+configuration or cached executables back.
 
 Uninstall removes the four LightHouse service registrations and application
 payload. It preserves data and the separately installed Npcap/Suricata/Sysmon/
@@ -131,6 +160,23 @@ First Event Log startup follows new events. Later starts resume saved record
 positions, advancing only after successful processing. Log clear/rollover is
 detected using both record ID and timestamp and replays retained records.
 Normal downstream deduplication still applies. Failures are logged and retried.
+Windows inputs add a hash of event-specific evidence (commands, images, accounts,
+target paths, remote addresses) to their deduplication key, preventing unrelated
+activity on the same host from being suppressed. Per-occurrence values (process and
+logon IDs/GUIDs, source ports, timestamps, DNS answers) are excluded, so repeats
+of one activity, such as a password-guessing burst, still collapse into one alert.
+The detector rule ID stays readable. Event 1102 accepts the actual Eventlog provider and preserves UserData.
+
+The installer probes both Event Log channels right after installing Sysmon (before
+the model download) and waits for fresh reader health reports from the newly
+started ingestion service. A reader reports `ok` once it has read its channel,
+without waiting for the model to triage a backlog; after a processing failure it
+stays `error` until an event is processed. Unchanged status is refreshed every
+30 seconds. Analysts/admins can inspect `GET /api/advanced/ingestion`; missing,
+failed, stopped or stale readers report `ok: false`. Off Windows no Event Log
+readers run, so it reports `ok: true` with no channels. These reports cover Event
+Log access/processing, not proof of network capture or AI accuracy. Reader reports
+expire after four minutes without progress.
 Suricata accepts alert, flow, http, tls, dns and smb records. Its Windows reader
 waits for file creation, handles partial lines, and reopens on rotation/truncate.
 As with the original file tailer, it starts at EOF and has no persistent file
@@ -138,7 +184,15 @@ offset across service downtime. The event channels have independent readers.
 
 ## Validation status (2026-09-18)
 
-- Backend suite: **62 passed**, including 11 new Windows ingestion tests.
+- Backend suite: **74 passed**, including 21 Windows ingestion tests, an installer
+  security regression suite, and authentication coverage for ingestion health.
+- Installer guard tests cover ACL construction, unsafe ownership/write grants
+  (including generic rights), reparse rejection with the specific reason, changed/
+  missing hashes, unsigned files, wrong publishers and unsigned/corrupt Sysmon
+  archives. The real Sysmon 15.22 archive passes the signer/product check. Download
+  verification, cache rejection and re-download were exercised against local files.
+  Applying protected ACLs and restoring ownership on an elevated installed tree
+  remain unvalidated.
 - React production build: passed; no UI or chat changes.
 - Embedded Python: backend, bcrypt, uvicorn and pywin32 import smoke test passed.
 - Bundled API/dashboard: health and HTML checks passed on two consecutive starts;

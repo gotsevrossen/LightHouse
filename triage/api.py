@@ -261,6 +261,12 @@ def health(user=Depends(require("analyst", "admin"))):
 def devices(user=Depends(require("analyst", "admin"))): return db.devices()
 
 
+@app.get("/api/advanced/ingestion")
+def ingestion_health(user=Depends(require("analyst", "admin"))):
+    from .ingest.health import snapshot
+    return snapshot()
+
+
 @app.get("/api/users")
 def users(user=Depends(require("admin"))):
     return db.users()
