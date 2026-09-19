@@ -265,6 +265,7 @@ LIGHTHOUSE_DB_PATH=${STATE_DIR}/lighthouse.db
 LIGHTHOUSE_SURICATA_PATH=/var/log/suricata/eve.json
 LIGHTHOUSE_ZEEK_PATH=/opt/zeek/logs/current/conn.log
 LIGHTHOUSE_WAZUH_PATH=/var/ossec/logs/alerts/alerts.json
+LIGHTHOUSE_MODEL_BACKEND=ollama
 LIGHTHOUSE_MODEL=${model}
 ENVEOF
     chmod 0644 "$ENV_FILE"

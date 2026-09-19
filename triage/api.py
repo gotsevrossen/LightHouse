@@ -49,8 +49,8 @@ async def _ingestion_task() -> None:
     is an install the owner cannot even log in to.
     """
     try:
-        # Imported here rather than at module scope: triage.main pulls in the Ollama
-        # client and the readers, which the appliance's API process has no use for.
+        # Imported here rather than at module scope: triage.main pulls in the model
+        # runtime and the readers, which the appliance's API process has no use for.
         from .main import build_service, configured_sources, run_ingestion, unreadable_sources
 
         configured = configured_sources()
@@ -254,7 +254,12 @@ def set_preference(body: Setting, user=Depends(require(*ALL_ROLES))):
 
 @app.get("/api/advanced/health")
 def health(user=Depends(require("analyst", "admin"))):
-    return {"database": "available", "model": os.getenv("LIGHTHOUSE_MODEL", "qwen3:8b"), "platform": platform.platform(), "load_average": os.getloadavg() if hasattr(os, "getloadavg") else None, "disk_free_bytes": shutil.disk_usage(".").free}
+    from .llm import model_backend, model_name
+    try:
+        backend, model = model_backend(), model_name()
+    except ValueError:
+        backend = model = "misconfigured"
+    return {"database": "available", "model": model, "model_backend": backend, "platform": platform.platform(), "load_average": os.getloadavg() if hasattr(os, "getloadavg") else None, "disk_free_bytes": shutil.disk_usage(".").free}
 
 
 @app.get("/api/advanced/devices")

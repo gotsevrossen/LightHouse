@@ -20,11 +20,19 @@ try {
     $pth = Get-ChildItem "$stage\runtime\python*._pth" | Select-Object -First 1
     # Enable site processing so pywin32's DLL/bootstrap .pth is loaded.
     @("python$($PythonVersion.Split('.')[0])$($PythonVersion.Split('.')[1]).zip", '.', 'Lib\site-packages', 'import site') | Set-Content $pth.FullName -Encoding ascii
-    # Wheels (pywin32, bcrypt, ...) run as SYSTEM; install only what uv.lock hashes.
+    # Wheels (pywin32, bcrypt, llama.cpp, ...) run as SYSTEM; install only what uv.lock
+    # hashes. Copies, not links into uv's cache: the payload is packaged as files.
     & uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file "$build\requirements.txt" | Out-Null; Check-Exit
-    & uv pip install --python 3.13 --require-hashes --target "$stage\runtime\Lib\site-packages" -r "$build\requirements.txt"; Check-Exit
-    & uv pip install --python 3.13 --target "$stage\runtime\Lib\site-packages" --no-deps .; Check-Exit
-    & "$stage\runtime\python.exe" -c 'import triage.main, win32evtlog, uvicorn, yaml, bcrypt'; Check-Exit
+    & uv pip install --python 3.13 --link-mode copy --require-hashes --target "$stage\runtime\Lib\site-packages" -r "$build\requirements.txt"; Check-Exit
+    & uv pip install --python 3.13 --link-mode copy --target "$stage\runtime\Lib\site-packages" --no-deps .; Check-Exit
+    & "$stage\runtime\python.exe" -c 'import triage.main, triage.local_model, win32evtlog, uvicorn, yaml, bcrypt'; Check-Exit
+    # llama.cpp ships as native DLLs inside the wheel; the model runtime is useless
+    # without them. Importing also loads them, which needs the VC++ runtime and an
+    # AVX2 CPU on this build machine (the installer provides both checks on targets).
+    foreach ($dll in @('llama.dll', 'ggml.dll', 'ggml-base.dll', 'ggml-cpu.dll')) {
+        if (!(Test-Path "$stage\runtime\Lib\site-packages\llama_cpp\lib\$dll")) { throw "llama.cpp runtime file missing from payload: $dll" }
+    }
+    & "$stage\runtime\python.exe" -c 'import llama_cpp; print(llama_cpp.__version__, llama_cpp.llama_print_system_info().decode())'; Check-Exit
     $compiler = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (!$compiler) {
         & winget install --id JRSoftware.InnoSetup --exact --source winget --silent --scope user --accept-source-agreements --accept-package-agreements; Check-Exit

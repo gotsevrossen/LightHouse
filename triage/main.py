@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .db import Database, default_db_path
 from .ingest import parse_record, tail_json_lines
-from .llm import FixtureTriageModel, OllamaTriageModel, TriageModel
+from .llm import DEFAULT_OLLAMA_MODEL, FixtureTriageModel, OllamaTriageModel, TriageModel, model_backend
 from .schema import Source
 from .service import TriageService
 
@@ -24,7 +24,11 @@ SOURCE_ENV_VARS: dict[Source, str] = {
 def build_model(mock: bool) -> TriageModel:
     if mock:
         return FixtureTriageModel()
-    return OllamaTriageModel(os.getenv("LIGHTHOUSE_MODEL", "phi4-mini" if sys.platform == "win32" else "qwen3:8b"),
+    if model_backend() == "llama_cpp":
+        # Imported only when selected: the Linux builds do not install llama.cpp.
+        from .local_model import LlamaCppSettings, LlamaCppTriageModel
+        return LlamaCppTriageModel(LlamaCppSettings.from_env())
+    return OllamaTriageModel(os.getenv("LIGHTHOUSE_MODEL", DEFAULT_OLLAMA_MODEL),
                              os.getenv("LIGHTHOUSE_OLLAMA_URL", "http://localhost:11434"))
 
 
@@ -139,9 +143,9 @@ def cli() -> None:
     parser = argparse.ArgumentParser(prog="python -m triage.main")
     sub = parser.add_subparsers(dest="command", required=True)
     replay_parser = sub.add_parser("replay", help="triage the bundled sample files")
-    replay_parser.add_argument("--mock", action="store_true", help="use the fixture model instead of Ollama")
+    replay_parser.add_argument("--mock", action="store_true", help="use the fixture model instead of the local model")
     tail_parser = sub.add_parser("tail", help="follow the configured live sensor logs")
-    tail_parser.add_argument("--mock", action="store_true", help="use the fixture model instead of Ollama")
+    tail_parser.add_argument("--mock", action="store_true", help="use the fixture model instead of the local model")
     args = parser.parse_args()
     try:
         if args.command == "replay":

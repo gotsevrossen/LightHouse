@@ -16,3 +16,6 @@ dashboard/*.tsbuildinfo
 # Windows installer build outputs
 /build/
 /dist/
+
+# GGUF models are multi-gigabyte downloads, never committed.
+*.gguf

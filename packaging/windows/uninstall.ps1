@@ -1,6 +1,7 @@
 ﻿param([Parameter(Mandatory=$true)][string]$AppDir, [switch]$StopOnly)
 $ErrorActionPreference = 'Stop'
 try {
+    # LightHouse-Ollama exists only on installs from releases before llama.cpp.
     foreach ($name in @('LightHouse-Ingestion', 'LightHouse-API', 'LightHouse-Suricata', 'LightHouse-Ollama')) {
         $service = Get-Service $name -ErrorAction SilentlyContinue
         if ($service) {

@@ -9,15 +9,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build.ps1
 The build installs Inno Setup with winget if needed, builds the existing React
 app, bundles an isolated Python 3.13 runtime and locked backend dependencies,
 and produces `dist/LightHouse-Setup.exe`. Target machines do not need Python,
-Node, Git, uv, WSL, Docker, Zeek, or Wazuh. Internet access is required during
-installation for the sensor packages, rules, Ollama, and model download.
-Windows 10 22H2 or newer, x64, is required.
+Node, Git, uv, WSL, Docker, Zeek, Wazuh, Ollama or any other AI software: local
+AI inference (llama.cpp) is bundled inside LightHouse. Internet access is required
+during installation for the sensor packages, rules, the Visual C++ runtime and the
+AI model download (about 2.5 GB). Windows 10 22H2 or newer, x64, is required; local
+AI additionally needs a CPU with AVX2 (see [Local AI](#local-ai-llamacpp)).
+Building also needs, on the build machine, the Visual C++ runtime and an AVX2 CPU:
+the build loads the bundled llama.cpp DLLs as a check.
 
 Double-click the EXE and approve Windows elevation. The free Npcap installer
 has its own interactive wizard. Enable WinPcap compatibility mode. All other
 dependency setup runs unattended. The setup then installs Suricata's official
-MSI, Sysmon with the SwiftOnSecurity starting configuration, Ollama, and
-`phi4-mini`. It enables Security logon success/failure auditing.
+MSI and Sysmon with the SwiftOnSecurity starting configuration, installs or
+updates the Microsoft Visual C++ runtime, downloads the Phi-4-mini GGUF model and
+runs a local AI self-test. It enables Security logon success/failure auditing.
 
 **The free Npcap edition cannot install silently.** This is a missing feature,
 not a switch that LightHouse can enable. See the [Npcap vendor guide](https://npcap.com/guide/npcap-users-guide.html).
@@ -41,7 +46,7 @@ The application payload may already be installed, but that is not a running stac
 - Sysmon rules: `C:\ProgramData\LightHouse\config\sysmon.xml`.
 - Suricata configuration/rules/EVE: `config\suricata.yaml`, `rules`, and `suricata\eve.json` below the data directory.
 - Event Log checkpoints: `C:\ProgramData\LightHouse\state`.
-- Model storage: `C:\ProgramData\LightHouse\models`.
+- AI model (GGUF): `C:\ProgramData\LightHouse\models\microsoft_Phi-4-mini-instruct-Q4_K_M.gguf`.
 - Installer transcript: `C:\ProgramData\LightHouse\logs\install.log`.
 - Last setup result: `C:\Program Files\LightHouse\setup\last-result.txt`.
 - Initial `admin` password: `C:\ProgramData\LightHouse\logs\LightHouse-API.stdout.log` (including rotated copies).
@@ -60,12 +65,64 @@ rotating stdout/stderr logs under the data directory:
 | LightHouse-API | `python -m uvicorn triage.api:app --host 127.0.0.1 --port 8000` |
 | LightHouse-Ingestion | `python -m triage.main tail` |
 | LightHouse-Suricata | Native Suricata packet capture and EVE output |
-| LightHouse-Ollama | `ollama serve`, using port 11435 and shared model storage |
 
-Ollama uses a dedicated loopback port so its service does not compete with a
-user's tray application on 11434. The API/dashboard is at http://127.0.0.1:8000.
+There is no separate AI service: the ingestion service runs the model in-process.
+The API/dashboard is at http://127.0.0.1:8000.
 NSSM's service environment supplies all application settings; no user PATH or
 shell activation is required. No inbound firewall rule is added.
+
+## Local AI (llama.cpp)
+
+Owners install LightHouse, not an AI application. The llama.cpp runtime is part of
+the LightHouse payload (the `llama-cpp-python` wheel and its DLLs in the bundled
+Python), and the model is one GGUF file in the data directory. Nothing listens on
+a network port for it and no separate AI service exists.
+
+- **Where it runs.** Inside the LightHouse-Ingestion service, the only process that
+  triages alerts. The API service never loads the model, so dashboard startup does
+  not wait for it.
+- **Lifecycle.** The model loads once, on the first alert after the service starts
+  (a few seconds), in a worker thread, and is reused for every later alert. Alerts
+  from all sensors are triaged one at a time; meanwhile readers keep polling and
+  reporting health.
+- **Output.** The first attempt generates freely and the JSON object is extracted.
+  If it does not validate, the retry uses grammar-constrained generation from the
+  result's JSON schema, which cannot produce malformed JSON. Constrained decoding
+  is not the first attempt because llama-cpp-python applies the grammar to the
+  whole vocabulary: with Phi-4-mini's 200k-token vocabulary it was about three
+  times slower per alert. Pydantic validation (`TriageResult`) remains the trust
+  boundary for both attempts, and the sensor severity floor still applies.
+- **Failures degrade, never crash.** Missing, corrupt or incompatible model,
+  insufficient memory, missing native runtime, unsupported CPU, malformed output or
+  an inference error all produce the existing "have a technical user review this
+  alert" result, with the reason in the analyst-only reasoning. Monitoring and
+  storage continue. A failed model load is retried after five minutes, so a
+  repaired model is picked up without restarting the service.
+- **Speed.** CPU inference of the pinned model took about 25-45 seconds per alert
+  on the 14-thread development machine, plus about 5-10 seconds to load once. A
+  burst of distinct alerts is therefore worked through over minutes; repeats are
+  deduplicated first and never reach the model.
+
+**CPU and runtime requirements.** The bundled wheel is the upstream prebuilt CPU
+build, compiled for AVX2/FMA/F16C (Intel Haswell 2013+, AMD Zen/Excavator+). On a
+CPU without AVX2 the native library would crash the service outright, so the CPU is
+checked before llama.cpp is loaded: setup then skips the model download and
+self-test and finishes with a warning, and the service stores alerts for human
+review. The DLLs also need the Visual C++ 2015-2022 runtime 14.44 or later
+(`msvcp140.dll`, `vcomp140.dll`), which setup installs from Microsoft. If that
+update needs a restart because the old DLLs are in use, setup says so; restart and
+run setup again.
+
+**GPU acceleration** is not included. CPU inference works on any supported PC.
+`LIGHTHOUSE_MODEL_GPU_LAYERS` (0 = CPU, -1 = all layers) takes effect only with a
+GPU-enabled llama.cpp build (CUDA or Vulkan wheel), which would change the
+packaged wheel, add vendor driver/runtime requirements, and need its own clean-
+machine validation. Nothing else in LightHouse would change.
+
+**Upgrading from an Ollama release.** Setup removes the old LightHouse-Ollama
+service and its model store (`models\blobs`, `models\manifests`). The Ollama
+application those releases installed under `C:\Program Files\LightHouse\tools\ollama`
+is left installed; remove it from Apps & features if nothing else uses it.
 
 ## Network configuration and repair
 
@@ -82,12 +139,18 @@ Example `windows.json` (use your real adapter GUID and subnet):
   "HomeNet": "192.168.1.0/24",
   "CaptureInterface": "\\Device\\NPF_{YOUR-ADAPTER-GUID}",
   "SuricataDir": "C:\\Suricata",
-  "Model": "phi4-mini",
   "ApiPort": 8000,
-  "OllamaPort": 11435,
+  "ModelPath": "",
   "NpcapOemInstaller": ""
 }
 ```
+
+`ModelPath` is empty for the LightHouse-managed model. To use another GGUF model,
+set it to the file's path and rerun setup: the file is copied once into the
+protected `models` directory (the SYSTEM service never reads a user-writable model
+file, and later reruns do not re-import it) and must pass the self-test. To switch
+models, use a file with a new name, or delete the copy under `models` first. Configurations from earlier releases may still contain
+`Model` and `OllamaPort`; both are ignored.
 
 Rerun setup after changing the JSON. It stops only the LightHouse services before
 updating files, preserves the database/config/checkpoints/models, updates service
@@ -97,13 +160,16 @@ in dependency order. ET Open's currently published Suricata 7.0.3 rule archive i
 used with Suricata 8; setup validates the resulting rules/configuration. Download
 SHA256 values are recorded in the transcript and executable packages (including
 cached copies) are checked against `packaging/windows/dependency-hashes.json`.
-Ollama and an operator-supplied Npcap OEM installer must have a valid Authenticode
-signature from the expected publisher. Sysmon is published only at a fixed
+The Visual C++ runtime installer and an operator-supplied Npcap OEM installer must
+have a valid Authenticode signature from the expected publisher. The GGUF model is
+downloaded from a commit-pinned Hugging Face URL and checked against its pinned
+SHA256; downloads are retried on transient network errors. Sysmon is published only at a fixed
 latest-release URL, so instead of a hash its `Sysmon64.exe` must carry a valid
 Microsoft signature and the Sysinternals Sysmon product name. OEM files are copied
 into the protected cache before verification/execution. NSSM is restored from its
 verified archive on repair. The build also checks the embedded Python archive
-against a pinned hash and installs Python wheels only with the hashes in `uv.lock`.
+against a pinned hash and installs Python wheels, including the llama-cpp-python
+wheel with its native DLLs, only with the hashes in `uv.lock`.
 Downloads are verified before they enter the cache; a download or cached copy
 that fails verification is discarded and fetched again on the next run.
 
@@ -127,9 +193,10 @@ A rejection is shown in the setup error and `last-result.txt`; it happens before
 reinstall into a clean location; do not blindly copy potentially modified
 configuration or cached executables back.
 
-Uninstall removes the four LightHouse service registrations and application
-payload. It preserves data and the separately installed Npcap/Suricata/Sysmon/
-Ollama dependencies; it does not change auditing back or remove shared drivers.
+Uninstall removes the LightHouse service registrations and application payload.
+It preserves data (including the model) and the separately installed Npcap/
+Suricata/Sysmon dependencies and Visual C++ runtime; it does not change auditing
+back or remove shared drivers.
 Installation is repairable, but does not offer transactional rollback of vendor
 installers. Honor a dependency's reported reboot requirement.
 
@@ -141,12 +208,14 @@ installers. Honor a dependency's reported reboot requirement.
 | LIGHTHOUSE_SYSMON_CHANNEL | `Microsoft-Windows-Sysmon/Operational` |
 | LIGHTHOUSE_SECURITY_CHANNEL | `Security` |
 | LIGHTHOUSE_EVENT_STATE_DIR | `C:\ProgramData\LightHouse\state` |
-| LIGHTHOUSE_MODEL | `phi4-mini` |
-| LIGHTHOUSE_OLLAMA_URL | `http://localhost:11434`; installer overrides to port 11435 |
+| LIGHTHOUSE_MODEL_BACKEND | `llama_cpp` (`ollama` is the Linux default) |
+| LIGHTHOUSE_MODEL_PATH | unset; installer sets the GGUF path under `models` |
+| LIGHTHOUSE_MODEL_CONTEXT_SIZE | `4096` tokens |
+| LIGHTHOUSE_MODEL_GPU_LAYERS | `0` (CPU only; see Local AI) |
 
 Set a channel/path to an empty string to disable that input. Windows ignores
 `LIGHTHOUSE_WAZUH_PATH` and `LIGHTHOUSE_ZEEK_PATH`. Linux keeps its existing file
-sources, environment variables, commands and model default.
+sources, environment variables, commands and Ollama model runtime.
 
 Sysmon/Security events use the existing Wazuh-compatible host-alert shape and
 therefore retain `source=wazuh` in the existing dashboard/API. Native provider,
@@ -182,10 +251,45 @@ waits for file creation, handles partial lines, and reopens on rotation/truncate
 As with the original file tailer, it starts at EOF and has no persistent file
 offset across service downtime. The event channels have independent readers.
 
+## Clean-machine validation checklist
+
+Required before release, on a clean Windows 10 22H2 and Windows 11 x64 machine or
+VM with no Python, Visual C++ runtime, Ollama or other AI software installed:
+
+1. Run `LightHouse-Setup.exe`; setup completes and `last-result.txt` reads
+   `Installation completed.` without an AVX2 warning (on an AVX2 CPU).
+2. The transcript shows the Visual C++ runtime installed and the self-test JSON
+   (`"ok": true`) for the GGUF under `C:\ProgramData\LightHouse\models`.
+3. `C:\Program Files\LightHouse\runtime\Lib\site-packages\llama_cpp\lib`
+   contains `llama.dll`, `ggml.dll`, `ggml-base.dll` and `ggml-cpu.dll`.
+4. The API, Ingestion and Suricata services are running; no LightHouse-Ollama
+   service exists, no `ollama.exe` is present or running, and nothing listens on
+   ports 11434/11435.
+5. Trigger a failed logon; within about a minute the dashboard shows the alert with
+   a model-written explanation (not the "technical user review" fallback).
+6. Reboot: services start, the model loads on the first alert, and triage works.
+7. Rename the GGUF file and trigger an alert: the alert is stored with the review
+   fallback and ingestion keeps running. Restore it: triage resumes within five
+   minutes without a restart.
+8. Repeat step 1 over an existing install (repair), and over an install of the
+   previous Ollama-based release (upgrade: legacy service and model store removed).
+9. On a machine without AVX2, setup completes with the warning and monitoring works.
+
 ## Validation status (2026-09-18)
 
-- Backend suite: **74 passed**, including 21 Windows ingestion tests, an installer
-  security regression suite, and authentication coverage for ingestion health.
+- llama.cpp packaging: the full `build.ps1` build produced `LightHouse-Setup.exe`
+  with the llama-cpp-python 0.3.35 CPU wheel installed hash-verified into the
+  embedded runtime. The staged embedded runtime loaded the native DLLs and, with
+  the pinned Phi-4-mini Q4_K_M GGUF, passed `triage.local_model smoke-test`
+  (load 4.5 s, one validated triage). Five sample alerts, including the prompt-
+  injection fixture, all validated on the first, unconstrained attempt.
+- **The clean-machine checklist above has not been run.** The development machine
+  already had the Visual C++ runtime and no clean VM was available.
+
+- Backend suite: **95 passed, 1 skipped** (the optional real-GGUF test, run
+  separately with `LIGHTHOUSE_TEST_GGUF`), including 21 llama.cpp backend tests
+  with a mocked runtime, 21 Windows ingestion tests, an installer security
+  regression suite, and authentication coverage for ingestion health.
 - Installer guard tests cover ACL construction, unsafe ownership/write grants
   (including generic rights), reparse rejection with the specific reason, changed/
   missing hashes, unsigned files, wrong publishers and unsigned/corrupt Sysmon
@@ -193,7 +297,7 @@ offset across service downtime. The event channels have independent readers.
   verification, cache rejection and re-download were exercised against local files.
   Applying protected ACLs and restoring ownership on an elevated installed tree
   remain unvalidated.
-- React production build: passed; no UI or chat changes.
+- React production build: passed; the only UI change is model wording (no Ollama).
 - Embedded Python: backend, bcrypt, uvicorn and pywin32 import smoke test passed.
 - Bundled API/dashboard: health and HTML checks passed on two consecutive starts;
   the existing administrator password hash was preserved on restart.
@@ -207,8 +311,8 @@ offset across service downtime. The event channels have independent readers.
   admin-protected; a later UAC request to inspect it was cancelled. The final
   build additionally returns a failing exit code and records dependency failure
   text in the Inno log and `last-result.txt`.
-- **Full dependency installation, model pull, service startup, reboot survival,
-  and end-to-end repair/reinstall have not been validated.**
+- **Full dependency installation, model download, service startup, reboot
+  survival, and end-to-end repair/reinstall/upgrade have not been validated.**
 - **No clean-machine or VM validation was performed.** All checks above used this
   Windows development machine. Do not interpret compilation as a successful
   clean-machine installation.

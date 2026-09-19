@@ -2,9 +2,18 @@
 
 LightHouse turns local Suricata, Zeek, and Wazuh records into validated, plain-English security guidance. Everything — the monitoring data and the AI inference — stays on your own machine. Nothing is sent to a remote service.
 
-Windows is the primary deployment target: native Suricata/Npcap, Sysmon and Windows Security events, Ollama, and NSSM services. Build the double-clickable `dist/LightHouse-Setup.exe` with `packaging/windows/build.ps1`. See [Windows installation and validation status](docs/windows-install.md). Free Npcap requires its interactive wizard; fully unattended setup needs preinstalled Npcap or its OEM installer. Full-stack installation and repair testing remain outstanding.
+Windows is the primary deployment target. Build the double-clickable `dist/LightHouse-Setup.exe` with `packaging/windows/build.ps1`, and see [Windows installation and validation status](docs/windows-install.md). A Windows install consists of:
 
-The existing Linux desktop application remains supported by the instructions below.
+- **Suricata + Npcap**: network intrusion detection.
+- **Sysmon and Windows Security events**: host monitoring.
+- **LightHouse**, which includes:
+  - the bundled llama.cpp inference runtime, running in-process in the ingestion service;
+  - a local GGUF model (Phi-4-mini, about 2.5 GB, downloaded and verified during setup).
+- **NSSM**: runs the LightHouse API, ingestion and Suricata as Windows services.
+
+Local AI is part of LightHouse: there is no Ollama or other AI application to install, launch or manage, and llama.cpp is an internal implementation detail. Local AI needs an x64 CPU with AVX2. Without AVX2, LightHouse still monitors and keeps alerts for human review. Free Npcap requires its interactive wizard; fully unattended setup needs preinstalled Npcap or its OEM installer. Clean-machine installation, repair and upgrade testing remain outstanding.
+
+The existing Linux desktop application remains supported by the instructions below. It still uses Ollama as its local model runner.
 
 ---
 
@@ -116,6 +125,7 @@ Set in `/etc/lighthouse/lighthouse.env` by the installer. You will not normally 
 | `LIGHTHOUSE_DB_PATH` | `~/.local/share/lighthouse/lighthouse.db` (desktop), `lighthouse.db` (appliance) | SQLite database, WAL mode. Holds password hashes and live session tokens; the directory is created `0700`. |
 | `LIGHTHOUSE_FIRST_RUN_DIR` | the data directory | Where the one-time admin password is handed from the service to the window. The package points this at `/var/lib/lighthouse/handoff` (`0750`, group `lighthouse`), because service and window run as different accounts. |
 | `LIGHTHOUSE_STATIC_DIR` | `dashboard/dist` under the bundle or working directory | Built dashboard, mounted at `/` when present. |
+| `LIGHTHOUSE_MODEL_BACKEND` | `ollama` (Linux), `llama_cpp` (Windows) | Local model runtime. `llama_cpp` runs a GGUF file in-process and also needs `LIGHTHOUSE_MODEL_PATH`; see the Windows guide. |
 | `LIGHTHOUSE_MODEL` | chosen by hardware at install | Local Ollama model used for triage. |
 | `LIGHTHOUSE_PORT` | `8000` | Loopback port for the API. |
 | `LIGHTHOUSE_SURICATA_PATH` | `/var/log/suricata/eve.json` | Suricata `eve.json` to tail. |

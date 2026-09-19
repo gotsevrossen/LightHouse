@@ -36,24 +36,32 @@ function Run([string]$File, [string]$Arguments) {
 function Assert-Dependency([string]$Path, [string]$Name) {
     $hash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
     Write-Host "$Name SHA256 $hash"
-    if ($Name -eq 'OllamaSetup.exe') {
-        Assert-Publisher $Path @('Ollama', 'Ollama Inc.', 'Ollama, Inc.')
+    if ($Name -eq 'vc_redist.x64.exe') {
+        Assert-Publisher $Path @('Microsoft Corporation')
     } elseif ($Name -eq 'Sysmon.zip') {
         Assert-SysmonArchive $Path "$DataDir\cache\sysmon-verify"
-    } elseif ($Name -match '\.(exe|msi|zip)$') {
+    } elseif ($Name -match '\.(exe|msi|zip|gguf)$') {
         Assert-FileHash $Path $dependencyHashes.$Name $hash
     }
 }
-function Fetch([string]$Url, [string]$Name) {
-    $target = Join-Path "$DataDir\cache" $Name
+function Fetch([string]$Url, [string]$Name, [string]$Directory = "$DataDir\cache") {
+    $target = Join-Path $Directory $Name
     if (Test-Path -LiteralPath $target) {
         try { Assert-Dependency $target $Name; return $target }
         catch { Write-Host "Cached $Name failed verification ($_); downloading again."; Remove-Item -LiteralPath $target -Force }
     }
     # Keep the extension: Authenticode and archive checks inspect it.
-    $partial = Join-Path "$DataDir\cache" "partial-$Name"
-    Write-Host "Downloading $Url"
-    Invoke-WebRequest -Uri $Url -OutFile $partial -UseBasicParsing
+    $partial = Join-Path $Directory "partial-$Name"
+    for ($attempt = 1; ; $attempt++) {
+        Write-Host "Downloading $Url"
+        try { Invoke-WebRequest -Uri $Url -OutFile $partial -UseBasicParsing; break }
+        catch {
+            # Multi-gigabyte downloads meet transient DNS failures and resets.
+            if ($attempt -ge 3) { Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue; throw }
+            Write-Host "Download attempt $attempt failed ($_); retrying."
+            Start-Sleep -Seconds (10 * $attempt)
+        }
+    }
     # Only verified files enter the cache, so a bad download is retried next run.
     try { Assert-Dependency $partial $Name }
     catch { Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue; throw }
@@ -97,14 +105,12 @@ try {
             Where-Object { $_.AddressState -eq 'Preferred' } | Select-Object -First 1
         [ordered]@{HomeNet="$($address.IPAddress)/$($address.PrefixLength)";
             CaptureInterface="\Device\NPF_$(([guid]$adapter.InterfaceGuid).ToString('B'))";
-            SuricataDir='C:\Suricata'; Model='phi4-mini'; ApiPort=8000;
-            OllamaPort=11435; NpcapOemInstaller=''} | ConvertTo-Json | Set-Content $configPath -Encoding utf8
+            SuricataDir='C:\Suricata'; ApiPort=8000; ModelPath='';
+            NpcapOemInstaller=''} | ConvertTo-Json | Set-Content $configPath -Encoding utf8
     }
+    # Model and OllamaPort in configurations from earlier releases are ignored.
     $config = Get-Content $configPath -Raw | ConvertFrom-Json
-    foreach ($port in @($config.ApiPort, $config.OllamaPort)) {
-        if ([int]$port -lt 1024 -or [int]$port -gt 65535) { throw 'Ports must be in 1024..65535.' }
-    }
-    if ($config.ApiPort -eq $config.OllamaPort) { throw 'API and Ollama ports must differ.' }
+    if ([int]$config.ApiPort -lt 1024 -or [int]$config.ApiPort -gt 65535) { throw 'ApiPort must be in 1024..65535.' }
     if (!(Get-Service npcap -ErrorAction SilentlyContinue)) {
         if ($config.NpcapOemInstaller) {
             $oem = "$DataDir\cache\npcap-oem.exe"
@@ -139,22 +145,67 @@ try {
     $python = "$AppDir\runtime\python.exe"
     & $python -m triage.ingest.health --preflight
     if ($LASTEXITCODE -ne 0) { throw 'Cannot read required Event Log channels.' }
-    $ollamaInstaller = Fetch 'https://ollama.com/download/OllamaSetup.exe' 'OllamaSetup.exe'
-    Run $ollamaInstaller "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOICONS /DIR=`"$AppDir\tools\ollama`""
-    $ollama = "$AppDir\tools\ollama\ollama.exe"
-    if (!(Test-Path $ollama)) { throw 'Ollama executable missing after install.' }
     # Always restore the wrapper from the verified archive, also on repair.
     $nssmZip = Fetch 'https://nssm.cc/ci/nssm-2.24-101-g897c7ad.zip' 'nssm-2.24-101-g897c7ad.zip'
     Expand-Archive $nssmZip "$DataDir\cache\nssm" -Force
     Copy-Item "$DataDir\cache\nssm\nssm-2.24-101-g897c7ad\win64\nssm.exe" "$AppDir\tools\nssm.exe" -Force
-    $ollamaEnvironment = @("OLLAMA_HOST=127.0.0.1:$($config.OllamaPort)", "OLLAMA_MODELS=$DataDir\models")
-    Register 'LightHouse-Ollama' $ollama 'serve' $ollamaEnvironment
-    Start-Service LightHouse-Ollama
-    Wait-Http "http://127.0.0.1:$($config.OllamaPort)/api/tags" | Out-Null
-    $env:OLLAMA_HOST = "127.0.0.1:$($config.OllamaPort)"
-    $env:OLLAMA_MODELS = "$DataDir\models"
-    & $ollama pull $config.Model
-    if ($LASTEXITCODE -ne 0) { throw 'Ollama model pull failed.' }
+    # Earlier releases ran Ollama as a LightHouse service with its own model store.
+    # Remove both before downloading the new model. The Ollama application those
+    # releases installed is left in Apps & features for the owner to remove.
+    if (Get-Service LightHouse-Ollama -ErrorAction SilentlyContinue) {
+        # Drop ingestion's dependency on it first: if setup stops before services
+        # are re-registered, ingestion must still start (else error 1075 at boot).
+        if (Get-Service LightHouse-Ingestion -ErrorAction SilentlyContinue) {
+            Nssm @('set', 'LightHouse-Ingestion', 'DependOnService', 'LightHouse-API', 'LightHouse-Suricata', 'EventLog')
+        }
+        Stop-Service LightHouse-Ollama -Force
+        Nssm @('remove', 'LightHouse-Ollama', 'confirm')
+    }
+    foreach ($legacy in @("$DataDir\models\blobs", "$DataDir\models\manifests")) {
+        if (Test-Path -LiteralPath $legacy) { Write-Host "Removing legacy Ollama model store $legacy"; Remove-Item -LiteralPath $legacy -Recurse -Force }
+    }
+    # Local AI runs in-process in the ingestion service: llama.cpp from the bundled
+    # runtime, and a GGUF model in the protected data directory.
+    $aiNote = ''
+    $defaultModel = 'microsoft_Phi-4-mini-instruct-Q4_K_M.gguf'
+    $modelPath = if ($config.ModelPath) { Join-Path "$DataDir\models" (Split-Path $config.ModelPath -Leaf) } else { "$DataDir\models\$defaultModel" }
+    & $python -m triage.local_model check-cpu
+    $cpuCheck = $LASTEXITCODE
+    if ($cpuCheck -notin @(0, 3)) { throw 'Local AI CPU check failed.' }
+    if ($cpuCheck -eq 0) {
+        # llama.cpp's DLLs need msvcp140/vcomp140 from the Visual C++ runtime,
+        # which the embedded Python lacks. The permalink always serves the latest
+        # supported version, so the cached copy is refreshed on every run.
+        Remove-Item -LiteralPath "$DataDir\cache\vc_redist.x64.exe" -Force -ErrorAction SilentlyContinue
+        $vcRedist = Fetch 'https://aka.ms/vc14/vc_redist.x64.exe' 'vc_redist.x64.exe'
+        $process = Start-Process -FilePath $vcRedist -ArgumentList '/install /quiet /norestart' -Wait -PassThru -WindowStyle Hidden
+        # 1638: the same or a newer runtime is already installed.
+        if ($process.ExitCode -notin @(0, 1638, 3010)) { throw "Visual C++ runtime installation failed with exit code $($process.ExitCode)." }
+        # The bundled runtime is built with MSVC 14.44; older msvcp140 builds crash it.
+        $msvcp = (Get-Item "$env:WINDIR\System32\msvcp140.dll" -ErrorAction SilentlyContinue).VersionInfo
+        if (!$msvcp -or [version]"$($msvcp.FileMajorPart).$($msvcp.FileMinorPart)" -lt [version]'14.44' -or !(Test-Path "$env:WINDIR\System32\vcomp140.dll")) {
+            # 3010: files in use are replaced at the next restart.
+            if ($process.ExitCode -eq 3010) { throw 'Restart Windows to finish installing the Visual C++ runtime, then run LightHouse setup again.' }
+            throw 'Visual C++ runtime 14.44 or later is required for local AI and was not installed.'
+        }
+        if ($config.ModelPath) {
+            # An operator-supplied model is copied into the protected store once:
+            # the SYSTEM service must never parse a file non-administrators can
+            # replace, and a rerun must not re-import a source that changed since.
+            # To switch models, use a new file name (or delete the copy first).
+            if (!(Test-Path -LiteralPath $modelPath)) {
+                Copy-Item -LiteralPath $config.ModelPath -Destination $modelPath
+            }
+        } else {
+            Fetch 'https://huggingface.co/bartowski/microsoft_Phi-4-mini-instruct-GGUF/resolve/7ff82c2aaa4dde30121698a973765f39be5288c0/microsoft_Phi-4-mini-instruct-Q4_K_M.gguf' $defaultModel "$DataDir\models" | Out-Null
+        }
+        # Loads the model and validates one triage, exactly as the service will.
+        & $python -m triage.local_model smoke-test --model-path $modelPath
+        if ($LASTEXITCODE -ne 0) { throw "The local AI model failed its self-test ($modelPath); see the output above." }
+    } else {
+        $aiNote = ' Local AI triage is unavailable because this CPU lacks AVX2; monitoring runs and alerts are kept for human review.'
+        Write-Warning $aiNote.Trim()
+    }
     $rules = Fetch 'https://rules.emergingthreats.net/open/suricata-7.0.3/emerging.rules.tar.gz' 'emerging.rules.tar.gz'
     $vendorYaml = Get-ChildItem $config.SuricataDir -Filter suricata.yaml -Recurse | Select-Object -First 1
     if (!$vendorYaml) { throw 'Suricata vendor YAML missing.' }
@@ -167,18 +218,18 @@ try {
     $environment = @('PYTHONUNBUFFERED=1', 'LIGHTHOUSE_DESKTOP=0', "LIGHTHOUSE_DB_PATH=$DataDir\lighthouse.db",
         "LIGHTHOUSE_STATIC_DIR=$AppDir\dashboard\dist", "LIGHTHOUSE_SURICATA_PATH=$DataDir\suricata\eve.json",
         'LIGHTHOUSE_SYSMON_CHANNEL=Microsoft-Windows-Sysmon/Operational', 'LIGHTHOUSE_SECURITY_CHANNEL=Security',
-        "LIGHTHOUSE_EVENT_STATE_DIR=$DataDir\state", "LIGHTHOUSE_MODEL=$($config.Model)",
-        "LIGHTHOUSE_OLLAMA_URL=http://127.0.0.1:$($config.OllamaPort)")
+        "LIGHTHOUSE_EVENT_STATE_DIR=$DataDir\state", 'LIGHTHOUSE_MODEL_BACKEND=llama_cpp',
+        "LIGHTHOUSE_MODEL_PATH=$modelPath")
     Register 'LightHouse-API' $python "-m uvicorn triage.api:app --host 127.0.0.1 --port $($config.ApiPort)" $environment
     Start-Service LightHouse-API
     # API seeds first, placing the existing credential banner in API stdout.
     Wait-Http "http://127.0.0.1:$($config.ApiPort)/api/health" | Out-Null
     Register 'LightHouse-Ingestion' $python '-m triage.main tail' $environment
-    Nssm @('set', 'LightHouse-Ingestion', 'DependOnService', 'LightHouse-API', 'LightHouse-Ollama', 'LightHouse-Suricata', 'EventLog')
+    Nssm @('set', 'LightHouse-Ingestion', 'DependOnService', 'LightHouse-API', 'LightHouse-Suricata', 'EventLog')
     $ingestionStarted = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     Start-Service LightHouse-Ingestion
     Start-Sleep -Seconds 5
-    foreach ($name in @('LightHouse-API', 'LightHouse-Ingestion', 'LightHouse-Suricata', 'LightHouse-Ollama')) {
+    foreach ($name in @('LightHouse-API', 'LightHouse-Ingestion', 'LightHouse-Suricata')) {
         if ((Get-Service $name).Status -ne 'Running') { throw "$name is not running; see service logs." }
     }
     if (!(Test-Path "$DataDir\suricata\eve.json")) { throw 'Suricata has not created eve.json; check capture interface and service stderr.' }
@@ -192,7 +243,8 @@ try {
     Write-Host "LightHouse ready: http://127.0.0.1:$($config.ApiPort)"
     Write-Host "Initial admin credential: $DataDir\logs\LightHouse-API.stdout.log"
     Write-Host "Configuration: $configPath. Review HOME_NET and capture adapter for this network."
-    Complete 'Installation completed.' 0
+    Write-Host "Local AI model: $modelPath"
+    Complete "Installation completed.$aiNote" 0
 } catch {
     Write-Host "INSTALLATION FAILED: $_"
     Complete "Installation incomplete: $_" 1

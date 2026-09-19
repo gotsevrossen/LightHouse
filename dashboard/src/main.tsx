@@ -12,7 +12,7 @@ const URGENT = ['high', 'critical'];
 const PROMPTS = ['Summarize my network and security status', 'Explain what my most recent alert means', 'What should I address first?', 'Are there any unusual devices on my network?'];
 const AI_NOTE = 'Written on this appliance and checked against the alert schema. Nothing left your network.';
 /* Chat has no endpoint yet; the local model is wired up once its evaluation lands. */
-const PLACEHOLDER_REPLY = 'Chat will run on the local Ollama model once its evaluation is complete. Until then, open an alert for the explanation and steps LightHouse has already written for it.';
+const PLACEHOLDER_REPLY = 'Chat will run on the local AI model once its evaluation is complete. Until then, open an alert for the explanation and steps LightHouse has already written for it.';
 
 const detailOf = (error: unknown, fallback: string) => {
   const raw = error instanceof Error ? error.message : '';
@@ -395,7 +395,7 @@ function Advanced({ selected }: { selected: any }) {
       <h3>Appliance health</h3>
       <div className="panel">
         <div className="field"><div><b>Database</b><p>Local SQLite store for alerts and explanations.</p></div><span className="pill">{health.database || 'unknown'}</span></div>
-        <div className="field"><div><b>Model</b><p>Local Ollama endpoint, no external calls.</p></div><span className="pill">{health.model || '—'}</span></div>
+        <div className="field"><div><b>Model</b><p>Runs locally on this computer, no external calls.</p></div><span className="pill">{health.model || '—'}</span></div>
         <div className="field"><div><b>Load average</b><p>1 / 5 / 15 minutes.</p></div><span className="pill">{loads(health)}</span></div>
         <div className="field"><div><b>Disk free</b><p>Retention trims raw events after 30 days.</p></div><span className="pill">{gigabytes(health.disk_free_bytes)}</span></div>
       </div>
@@ -527,7 +527,7 @@ function Admin({ session }: { session: Session }) {
       <h3>Appliance</h3>
       <div className="panel">
         <div className="field"><div><b>Platform</b><p>The host this appliance is running on.</p></div><span className="pill">{health.platform || 'unknown'}</span></div>
-        <div className="field"><div><b>Model</b><p>Local Ollama endpoint, no external calls.</p></div><span className="pill">{health.model || '—'}</span></div>
+        <div className="field"><div><b>Model</b><p>Runs locally on this computer, no external calls.</p></div><span className="pill">{health.model || '—'}</span></div>
         <div className="field"><div><b>Load average</b><p>1 / 5 / 15 minutes.</p></div><span className="pill">{loads(health)}</span></div>
         <div className="field"><div><b>Disk free</b><p>Retention trims raw events after 30 days.</p></div><span className="pill">{gigabytes(health.disk_free_bytes)}</span></div>
       </div>

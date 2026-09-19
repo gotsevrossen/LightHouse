@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import json
+import os
+from pathlib import Path
 import re
+import sys
 
 import httpx
 
@@ -79,13 +82,61 @@ def build_prompt(alert: NormalizedAlert) -> str:
     )
 
 
+# Shape the model is asked for. Runtimes that support constrained decoding use it
+# to force well-formed JSON; TriageResult validation stays the trust boundary.
+TRIAGE_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+        "explanation": {"type": "string"},
+        "recommended_action": {"type": "string"},
+        "reasoning": {"type": "string"},
+    },
+    "required": ["severity", "explanation", "recommended_action"],
+}
+
+
+MODEL_BACKENDS = ("llama_cpp", "ollama")
+DEFAULT_OLLAMA_MODEL = "qwen3:8b"
+
+
+def model_backend() -> str:
+    """Windows runs llama.cpp in-process; the Linux builds install Ollama."""
+    default = "llama_cpp" if sys.platform == "win32" else "ollama"
+    value = os.getenv("LIGHTHOUSE_MODEL_BACKEND", "").strip().lower() or default
+    if value not in MODEL_BACKENDS:
+        raise ValueError(f"LIGHTHOUSE_MODEL_BACKEND must be one of {', '.join(MODEL_BACKENDS)}, got {value!r}")
+    return value
+
+
+def model_name() -> str:
+    """Label for health views, from configuration only; never loads a model."""
+    if model_backend() == "llama_cpp":
+        path = os.getenv("LIGHTHOUSE_MODEL_PATH", "").strip()
+        return Path(path).name if path else "not configured"
+    return os.getenv("LIGHTHOUSE_MODEL", DEFAULT_OLLAMA_MODEL)
+
+
 class TriageModel(ABC):
+    """Every model runtime sits behind this. Implementations never raise for a bad
+    or unavailable model: they return unavailable_result() so ingestion continues."""
+
     @abstractmethod
     async def triage(self, alert: NormalizedAlert) -> TriageResult: ...
 
 
+def unavailable_result(reason: str) -> TriageResult:
+    """Stored when no validated model output exists; asks for a human review."""
+    return TriageResult(severity=Severity.UNKNOWN,
+                        explanation="The local AI could not validate this alert. Review the technical details.",
+                        recommended_action="Have a technical user review this alert before taking action.",
+                        reasoning=reason[:2400])
+
+
 class OllamaTriageModel(TriageModel):
-    def __init__(self, model: str = "qwen3:8b", base_url: str = "http://localhost:11434"):
+    """Ollama HTTP runtime, used by the Linux desktop and appliance builds."""
+
+    def __init__(self, model: str = DEFAULT_OLLAMA_MODEL, base_url: str = "http://localhost:11434"):
         self.model, self.base_url = model, base_url.rstrip("/")
 
     async def triage(self, alert: NormalizedAlert) -> TriageResult:
@@ -101,10 +152,7 @@ class OllamaTriageModel(TriageModel):
                 return TriageResult.model_validate(json.loads(response.json()["message"]["content"]))
             except (httpx.HTTPError, KeyError, json.JSONDecodeError, ValueError) as error:
                 last_error = error
-        return TriageResult(severity=Severity.UNKNOWN,
-                            explanation="The local AI could not validate this alert. Review the technical details.",
-                            recommended_action="Have a technical user review this alert before taking action.",
-                            reasoning=f"Model validation failed: {last_error}")
+        return unavailable_result(f"Model validation failed: {last_error}")
 
 
 class FixtureTriageModel(TriageModel):
@@ -114,4 +162,4 @@ class FixtureTriageModel(TriageModel):
         severity = Severity.HIGH if any(word in title for word in ("scan", "malware", "brute")) else Severity.MEDIUM
         return TriageResult(severity=severity, explanation=f"LightHouse detected: {alert.title}.",
                             recommended_action="Review the affected device and its recent activity.",
-                            reasoning="Fixture model output; replace with Ollama for live triage.")
+                            reasoning="Fixture model output; use a local model runtime for live triage.")

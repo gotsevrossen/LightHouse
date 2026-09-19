@@ -54,7 +54,7 @@ var Code: Integer; Args: String; FailureDetail: AnsiString; Detail: String;
 begin
   if CurStep = ssPostInstall then begin
     SetupFailed := True;
-    WizardForm.StatusLabel.Caption := 'Installing sensors and downloading phi4-mini. This can take several minutes...';
+    WizardForm.StatusLabel.Caption := 'Installing sensors and downloading the local AI model (about 2.5 GB). This can take several minutes...';
     Args := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\setup\install.ps1') + '" -AppDir "' + ExpandConstant('{app}') + '"';
     if WizardSilent then Args := Args + ' -Unattended';
     if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Args, '', SW_HIDE, ewWaitUntilTerminated, Code) then
