@@ -357,6 +357,7 @@ temporary experiment on an install that the next setup run will undo.
 | LIGHTHOUSE_MODEL_CONTEXT_SIZE | `4096` tokens. *Developer only* |
 | LIGHTHOUSE_MODEL_GPU_LAYERS | `0` (CPU only; see Local AI). *Developer only* |
 | LIGHTHOUSE_GENAI_KEY_FILE | `<data>\config\genai-key.bin`: the DPAPI-encrypted Purdue GenAI Studio key (opt-in chat, `python -m triage.cloud_key set`; see README) |
+| LIGHTHOUSE_BRAVE_KEY_FILE | `<data>\config\brave-key.bin`: the DPAPI-encrypted Brave Search key (opt-in web search for chat questions about one alert, `python -m triage.brave_key set`; see README) |
 | LIGHTHOUSE_GENAI_MODEL | the model saved with `cloud_key model` or chosen in Settings → Chat AI, else `gpt-oss:120b`. *Developer only*: on an install, choose the model in Settings |
 | LIGHTHOUSE_MODEL_THREADS | automatic: one thread per physical core, skipping the separate low-power core island of hybrid laptop CPUs (Intel Core Ultra). Set `"ModelThreads": N` in `windows.json` and rerun setup to override; compare values with `python -m triage.local_model smoke-test --threads N` |
 | LIGHTHOUSE_MODEL_SPECULATIVE | `1` (on): prompt-lookup speculative decoding, same answers sooner. `0` turns it off; compare with `python -m triage.local_model bench`. *Developer only* |
@@ -475,7 +476,8 @@ VM with no Python, Visual C++ runtime, Ollama or other AI software installed:
   `tests/test_windows_installer.py` and `tests/windows_security.ps1`), and
   `npm test` and `npm run build` in `dashboard`. The tests check the scripts'
   structure and guards. They don't run setup.
-- Releases are built with `build.ps1` and installed on a test VM by hand. The
+- Releases are built with `build.ps1` and installed by hand on the developer's own
+  Windows laptop (a real install on physical hardware and Wi-Fi, not a VM). The
   full clean-machine checklist above, including repair and upgrade, has not yet
   been run end to end on clean Windows 10 and Windows 11 machines.
 - The free Npcap edition still needs its interactive wizard (see the top of this

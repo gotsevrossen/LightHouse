@@ -125,7 +125,7 @@ The first question after a restart takes longer, while the AI loads.
 
 ### Optional: faster, smarter chat with Purdue GenAI Studio
 
-If you have a Purdue GenAI Studio account, chat can use its much larger models running on Purdue's servers. A short answer takes about 2 seconds, instead of a minute or more on a laptop processor. This is **off unless you turn it on**, and it only applies to chat: alert triage always stays on this computer. When it's on, your question and the plain-English details of the alerts it's about go to Purdue's servers. They run on Purdue's own hardware and aren't used to train models. The chat box's footer says when answers come from GenAI Studio. If Purdue can't be reached, chat falls back to the local AI.
+If you have a Purdue GenAI Studio account, chat can use its much larger models running on Purdue's servers. A short answer takes about 2 seconds, instead of a minute or more on a laptop processor. This is **off unless you turn it on**, and it only applies to chat: alert triage always stays on this computer. When it's on, your question and the plain-English details of the alerts it's about go to Purdue's servers. When you ask about one specific alert, part of its raw sensor record goes too (up to 1,200 characters, which can include device names, IP addresses, usernames, file paths and command lines), so the AI can explain exactly what happened. They run on Purdue's own hardware and aren't used to train models. The chat box's footer says when answers come from GenAI Studio. If Purdue can't be reached, chat falls back to the local AI.
 
 To turn it on, open **PowerShell as administrator** and run:
 
@@ -139,6 +139,26 @@ Chat uses the key from the next question; no restart is needed. `cloud_key clear
 Then choose the default model on the **Settings** page (admins only), under **Chat AI**. The choices are **Thinking** (GPT-OSS 120B, recommended), **Balanced** (Llama 4), **Quick** (Gemma 4 26B), or **Local (slow)**, which keeps chat on this computer even with a key stored. A change applies from the next question, with no restart needed. While the default is an online model, anyone can pick a different one for a question with the selector beside the chat box's Send button; while it is **Local (slow)**, the chat box offers no online models.
 
 Create the key in GenAI Studio under your avatar → **Settings → Account → API Keys**. LightHouse stores it encrypted with Windows' own data protection, in its admin-only data folder, so a copy taken to another computer is useless. It's only ever sent to `genai.rcac.purdue.edu`, over HTTPS, and is never shown, logged or put in the dashboard. To check whether it's set, use `cloud_key status`. To turn it off, use `cloud_key clear`, then restart the service. If you think the key leaked, delete it in GenAI Studio and create a new one. GenAI Studio is for Purdue students, faculty and staff, and the key is tied to your account, so never put it in an installer or share it.
+
+### Optional: web search in chat with Brave Search
+
+With a Brave Search API key, a chat question about one alert also gets a few current web results, so the AI can investigate it like a first-line security analyst: what the activity is doing, who is likely behind it and how it works, double-checked against what it finds. This is **off unless you turn it on**, and it works with either the local AI or GenAI Studio.
+
+What gets searched is decided by LightHouse's code, never by the AI, and there are two searches per alert:
+
+- **The kind of alert**, from public identifiers only: a Windows event ID (*Windows Security event ID 4625*), a Suricata rule's number and name, or a MITRE ATT&CK technique ID (*T1046*).
+- **The outside party**: the one public internet address in the alert (for example the server this computer connected to, or the address that tried to log in), or else a public domain name from the alert's DNS, TLS or HTTP details. This tells Brave which outside address your network dealt with. Private, local and internal addresses and names (192.168.x.x, 10.x.x.x, *.local* and similar) are never searched, and when both ends of a connection are public addresses neither is searched, since one of them is your own.
+
+Your device names, usernames, file paths, command lines and your own question are never searched. General questions (not about one alert) don't search at all. An attacker can influence which outside address gets searched and what pages say about it, so results are treated like any other untrusted data: they can't lower an alert's severity, and the AI is told they're public pages that may be wrong. While it's on, the chat box's footer says so.
+
+Get a key from [Brave Search API](https://brave.com/search/api/) (check its current plans and terms), then in **PowerShell as administrator**:
+
+```powershell
+$app = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object DisplayName -like 'LightHouse*').InstallLocation
+& "$app\runtime\python.exe" -m triage.brave_key set        # paste your key; it isn't shown
+```
+
+It works from the next question, with no restart. The key is stored like the GenAI Studio key (encrypted, admin-only folder) and is only ever sent to `api.search.brave.com`. Use `brave_key status` to check it and `brave_key clear` to turn web search off.
 
 ### AI instructions (Admin page)
 

@@ -251,7 +251,7 @@ def test_the_chat_box_may_pick_a_model_per_question(api, tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_key, "load", lambda path=None: KEY if (tmp_path / "genai-key.bin").is_file() else None)
     # No key stored: nothing to pick, and a forged pick still stays on this computer.
     options = client.get("/api/chat/provider", headers=owner).json()
-    assert options == {"provider": "local", "choices": [], "current": "local"}
+    assert options == {"provider": "local", "choices": [], "current": "local", "web_search": False}
     assert api.chat_model("gpt-oss:120b") is local
     (tmp_path / "genai-key.bin").write_bytes(b"encrypted")
     options = client.get("/api/chat/provider", headers=owner).json()
@@ -287,7 +287,7 @@ def test_an_undecryptable_key_file_means_local_everywhere(api, tmp_path, monkeyp
     key_file = tmp_path / "genai-key.bin"
     key_file.write_bytes(b"from another computer")
     monkeypatch.setattr(cloud_key, "load", lambda path=None: None)
-    assert client.get("/api/chat/provider", headers=owner).json() == {"provider": "local", "choices": [], "current": "local"}
+    assert client.get("/api/chat/provider", headers=owner).json() == {"provider": "local", "choices": [], "current": "local", "web_search": False}
     models = client.get("/api/chat/models", headers=admin).json()
     assert models["current"] == "local" and models["key_configured"] is False
     assert client.put("/api/chat/model", headers=admin, json={"model": "gemma4:26b-a4b"}).status_code == 409

@@ -1172,7 +1172,7 @@ function ChatModelSection({ onChange }: { onChange: () => void }) {
           <div><b>Default chat model</b><p>{failed ? 'LightHouse couldn’t load the chat settings. Reload the page to try again.'
             : !models ? 'Loading…'
             : models.key_configured
-            ? 'For everyone. Online models answer through Purdue GenAI Studio in seconds: each question and a short summary of the related alerts are sent there. Alert checking always stays on this computer. Choose Local (slow) to keep every question on this computer.'
+            ? 'For everyone. Online models answer through Purdue GenAI Studio in seconds: each question and a short summary of the related alerts are sent there, plus part of the alert’s technical record when asking about one alert. Alert checking always stays on this computer. Choose Local (slow) to keep every question on this computer.'
             : 'Add a Purdue GenAI Studio key to use its faster models (see the README). Until then, chat runs on this computer.'}</p></div>
           {models && (
             <Select label="Default chat model" value={models.key_configured ? models.current : 'local'} onChange={choose}
@@ -1216,6 +1216,8 @@ function activityText(entry: AuditEntry): string {
     case 'user_signed_out': return `Signed ${target} out everywhere`;
     case 'genai_key_set': return 'Stored a Purdue GenAI Studio key';
     case 'genai_key_cleared': return 'Removed the Purdue GenAI Studio key';
+    case 'brave_key_set': return 'Stored a Brave Search key (web search in chat)';
+    case 'brave_key_cleared': return 'Removed the Brave Search key';
     default: return 'Something LightHouse doesn’t recognise';
   }
 }
@@ -1424,7 +1426,7 @@ function Admin({ session }: { session: Session }) {
   );
 }
 
-const NO_CHAT_CHOICES: ChatOptions = { provider: 'local', choices: [], current: 'local' };
+const NO_CHAT_CHOICES: ChatOptions = { provider: 'local', choices: [], current: 'local', webSearch: false };
 const PICKED_MODEL_KEY = 'lighthouse-chat-model';
 /* How close to the bottom counts as "at the bottom" again, so following resumes
    without having to land on the very last pixel. */
@@ -1832,13 +1834,19 @@ function Dashboard({ session, signOut }: { session: Session; signOut: () => Prom
               onAnimationEnd={event => event.currentTarget.classList.remove('pressed')}><Icon name="send" size={20} /></button>
           </form>
           {/* Says plainly where a question goes: the owner opted in to GenAI Studio, and
-              each question carries a short summary of the related alerts there. When
-              the provider couldn't be checked, it claims neither way. */}
+              each question carries a short summary of the related alerts there (plus a
+              quote of the alert's sensor record when asking about one). When the
+              provider couldn't be checked, it claims neither way. With web search on,
+              "stays on this computer" would be false for alert questions, so it says
+              what is searched instead. */}
           <small>{provider === 'purdue'
-            ? 'LightHouse is AI, it can make mistakes. Answers by Purdue GenAI Studio (online): your question and a summary of the related alerts are sent there. Alert checking stays on this computer.'
-            : provider === 'local'
+            ? 'LightHouse is AI, it can make mistakes. Answers by Purdue GenAI Studio (online): your question and details of the related alerts are sent there. Alert checking stays on this computer.'
+            : provider === 'local' && !chatOptions?.webSearch
             ? 'LightHouse is AI, it can make mistakes. Chats stay on this computer for your privacy.'
-            : 'LightHouse is AI, it can make mistakes.'}</small>
+            : provider === 'local'
+            ? 'LightHouse is AI, it can make mistakes. Answers are written on this computer.'
+            : 'LightHouse is AI, it can make mistakes.'}
+            {chatOptions?.webSearch && ' Questions about an alert also search the web (Brave Search) for its rule name and the outside address involved, never your own addresses, devices or names.'}</small>
         </div>
       </main>
       {release && <UpdateDialog info={release} onClose={() => setRelease(null)} />}

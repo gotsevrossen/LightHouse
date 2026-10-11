@@ -1,4 +1,4 @@
-﻿#define AppVersion "0.3.3"
+﻿#define AppVersion "0.3.5"
 #ifndef PayloadDir
   #error Build with packaging/windows/build.ps1 to supply the bundled Python runtime and dashboard.
 #endif

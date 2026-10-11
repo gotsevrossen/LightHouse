@@ -152,6 +152,9 @@ dialog.update p:not(.eyebrow){color:var(--muted);line-height:1.55}
 /* ---- Chat thread. Who is speaking is carried by placement and surface, never by
        a name printed in front of the words. ---- */
 .thread{display:flex;flex-direction:column;gap:24px;margin-top:10px}
+/* Pasted evidence (hashes, paths, encoded command lines) has no spaces to wrap at:
+   break it anywhere rather than run off the bubble and scroll the page sideways. */
+.thread .turn{min-width:0;overflow-wrap:anywhere}
 .thread .turn.me{align-self:flex-end;max-width:min(620px,82%);padding:14px 18px;
   border-radius:var(--r-md);background:var(--paper)}
 .thread .turn.them{align-self:flex-start;max-width:72ch}

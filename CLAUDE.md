@@ -2,7 +2,9 @@
 
 LightHouse is a Windows desktop app that gives small-business owners SOC-style security monitoring with no security background required and no cloud. It collects alerts from local sensors, triages each one with an on-device LLM, and shows plain-English explanations and one concrete next step in a desktop dashboard. **Monitoring data and alert triage never leave the user's machine.** Treat that as a hard product requirement, not a preference.
 
-**One owner-approved, opt-in exception (2026-10-08):** when an admin stores a Purdue GenAI Studio API key (`python -m triage.cloud_key set`), *chat* answers come from GenAI Studio (`triage/cloud_model.py`): the question plus the same owner-safe, fenced alert context. Triage stays local; GenAI Studio failures fall back to the local model; the dashboard footer says when answers come from GenAI Studio. The key lives only DPAPI-encrypted in the admin-only data folder and goes only to `genai.rcac.purdue.edu`. Without a key, nothing leaves the machine. Don't widen this (no triage, no other providers) without asking.
+**One owner-approved, opt-in exception (2026-10-08):** when an admin stores a Purdue GenAI Studio API key (`python -m triage.cloud_key set`), *chat* answers come from GenAI Studio (`triage/cloud_model.py`): the question plus the same fenced alert context as local chat, which (owner-approved 2026-10-10) includes a capped quote of the raw sensor record when the question is about one alert. Triage stays local; GenAI Studio failures fall back to the local model; the dashboard footer says when answers come from GenAI Studio. The key lives only DPAPI-encrypted in the admin-only data folder and goes only to `genai.rcac.purdue.edu`. Without a key, nothing leaves the machine. Don't widen this (no triage, no other providers) without asking.
+
+**Second owner-approved, opt-in exception (2026-10-10): Brave web search for chat.** When an admin stores a Brave Search key (`python -m triage.brave_key set`), a chat question about one alert also gets up to 5 web results (`triage/web_search.py`), so the AI can investigate like a tier-one analyst (what, who, how). Queries go only to `api.search.brave.com` and are built by code alone, two per alert: (1) the alert's kind from public identifiers (Windows event ID, Suricata rule sid and name filtered word by word, MITRE technique IDs), checked against an allowlist that rejects anything shaped like an address; (2) owner-approved 2026-10-11, the outside party: the alert's single public IP (`is_global`; never private/loopback/link-local/CGNAT; neither when both ends are public), else a public domain from structured DNS/TLS/HTTP/Sysmon fields (no internal suffixes or single labels). Never device/user names, paths, command lines, free text from the record, the owner's question or model output. General questions never search. Results are cleaned, capped and fenced as untrusted evidence; failures mean no results. The footer says when web search is on. Keep these safeguards; don't add other search or threat-intel providers without asking.
 
 ## Platform: Windows only
 
@@ -37,6 +39,8 @@ triage/                 Python backend (FastAPI + ingestion + triage)
   guidance.py           Owner guidance tier from final severity + confidence (fixed banners)
   cloud_key.py          GenAI Studio key, DPAPI-encrypted in the data folder (`python -m triage.cloud_key`)
   cloud_model.py        GenAI Studio chat model (chat only; falls back to local; triage stays local)
+  brave_key.py          Brave Search key, DPAPI-encrypted beside the GenAI key (`python -m triage.brave_key`)
+  web_search.py         Opt-in Brave web search for chat about one alert (rule identifiers + the outside public IP/domain)
   monitoring.py         Pause/resume monitoring and shut down (Windows services)
   updates.py            GitHub release check + "Update now" (SHA-256-verified, one-time SYSTEM task)
   reset_password.py     Admin CLI: replace a lost password
@@ -136,10 +140,11 @@ The frame was signed off. **Match it strictly.** Reuse the existing tokens, comp
 Wired up and shipped. History stays in the browser's localStorage (`conversations.ts`); the backend lives in `api.py` and `llm.py`.
 
 - **Routes** (all behind `require(*ALL_ROLES)` unless noted): `POST /api/chat` and `POST /api/chat/stream` (newline-delimited JSON events) answer; `POST /api/chat/warm` pre-reads the prompt while the user types; `POST /api/chat/title` names a chat; `GET /api/chat/provider` says local or GenAI Studio (for the footer); `GET /api/chat/models` and `PUT /api/chat/model` read and set the default model (admin only).
-- **Where answers come from:** the local llama.cpp runtime behind the `TriageModel` interface (the API process reuses one loaded model; the GGUF is memory-mapped and shared with ingestion), or Purdue GenAI Studio only when an admin stored a key (see the exception at the top). No other cloud API. GenAI failures fall back to the local model.
+- **Where answers come from:** the local llama.cpp runtime behind the `TriageModel` interface (the API process reuses one loaded model; the GGUF is memory-mapped and shared with ingestion), or Purdue GenAI Studio only when an admin stored a key (see the exception at the top). No other cloud API answers; Brave Search only supplies fenced web results (second exception at the top). GenAI failures fall back to the local model.
 - **Choosing a model:** admins set the default in Settings → Chat AI (Thinking / Balanced / Quick / Local (slow)); anyone may pick another for one question with the picker beside Send, unless the default is Local (slow), which offers no online models.
 - Any alert data included as context is attacker-controlled: it is fenced with the same `<untrusted_evidence>` handling as `build_prompt` and length-capped. Keep it that way.
-- Respect roles: chat context is built from `AlertDetailOwner` (no `raw`, `rule_id` or `reasoning`), for every role.
+- Respect roles: chat context is built from `AlertDetailOwner` (no `rule_id` or `reasoning`), for every role.
+- **Evidence in chat (owner-approved 2026-10-10):** a question about one alert also carries a quote of that alert's raw sensor record (`raw_excerpt`, `CHAT_EVIDENCE_MAX_CHARS` = 1200, scrubbed, inside the fence), for every role and to GenAI Studio too, so the AI can explain exactly what happened. General questions carry no raw record. Don't raise the cap or add raw records to general questions without asking.
 - Answers are for a non-technical owner. "Model unavailable / no AVX2" gives a clear message, not an error screen. Fixed "get help" reminders are added by code above the AI's answer.
 - Inference is CPU-only and slow; keep the typing indicator and don't block the UI.
 
@@ -151,6 +156,15 @@ Wired up and shipped. History stays in the browser's localStorage (`conversation
 - Keep changes small and surgical; don't refactor unrelated code.
 - **Never run `git commit`, `git push` or other history-changing git commands.** Make the file changes and leave committing to me.
 
+## Testing on the owner's device
+
+Releases are tested on my own Windows laptop, not a VM. LightHouse is really installed there (install folder `L:\LightHouse`, capturing on the laptop's Wi-Fi), so that install is live: real alerts, running services, my data.
+
+- Building (`build.ps1`, `npm run build`) and running `python -m pytest` / `npm test` are fine.
+- Read-only diagnostics of the install are fine: service status, the registry, the Windows event logs, files readable without elevation, `GET` requests to `127.0.0.1:8000`.
+- Never run the installer, open the dashboard or any GUI window or browser, or stop, restart or reconfigure the LightHouse services yourself. Hand me the command and I'll run it.
+- `<install folder>\data` is admin-only, so its logs and config can't be read without elevation; ask me to run an elevated read and paste the output.
+
 ## Working with subagents
 
 When a prompt has several parts, split them across parallel subagents instead of doing them one after another, to finish sooner.
@@ -160,7 +174,7 @@ When a prompt has several parts, split them across parallel subagents instead of
 - **Keep small or tightly linked work inline.** If one part needs another part's result first, or a part is only a quick edit, do it yourself instead of spawning an agent.
 - **Brief every agent fully.** Agents start without this conversation, so each brief includes:
   - the relevant rules from this file (security rules, the design frame, Windows-only, no git commits);
-  - the "no testing on the owner's machine" rule (no installers, GUI windows or browsers);
+  - the "Testing on the owner's device" rules (no installers, GUI windows, browsers or service restarts; read-only diagnostics only);
   - what "done" means for its part.
 - **Check the combined result yourself.** After the agents finish, review their changes together, fix any conflicts, then run `python -m pytest`, `npm run build` and `npm test` once on the combined work before reporting.
 

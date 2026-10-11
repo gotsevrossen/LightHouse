@@ -35,6 +35,9 @@ class AuditAction(StrEnum):
     # Set or removed at the command line (python -m triage.cloud_key); never the key.
     GENAI_KEY_SET = "genai_key_set"
     GENAI_KEY_CLEARED = "genai_key_cleared"
+    # Same, for web search in chat (python -m triage.brave_key).
+    BRAVE_KEY_SET = "brave_key_set"
+    BRAVE_KEY_CLEARED = "brave_key_cleared"
     UPDATE_INSTALL_STARTED = "update_install_started"
     USER_CREATED = "user_created"
     USER_ROLE_CHANGED = "user_role_changed"

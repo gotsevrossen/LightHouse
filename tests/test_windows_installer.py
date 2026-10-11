@@ -133,6 +133,30 @@ def test_setup_clears_a_stale_shutdown_marker_before_starting_services():
     assert marker < install.index("Register 'LightHouse-Suricata'") < install.index('Start-Service LightHouse-Suricata')
 
 
+def test_suricata_gets_an_upper_case_adapter_guid():
+    """Suricata 8.0.7 matches the GUID case-sensitively against Windows' upper-case
+    adapter name; a miss crashed it with heap corruption seconds into every capture."""
+    install = (WINDOWS / 'install.ps1').read_text(encoding='utf-8')
+    assert "ToString('B').ToUpperInvariant()" in install
+    assert '-i `"$captureInterface`"' in install and '$config.CaptureInterface)`"' not in install
+    if sys.platform != 'win32':
+        return
+    start = install.index('$captureInterface = [string]$config.CaptureInterface')
+    snippet = install[start:install.index('if ([int]$config.ApiPort', start)]
+    cases = {
+        # Saved by earlier releases: repaired on upgrade.
+        r'\Device\NPF_{a2d75178-0c67-4fb5-8859-f56d7cc167cb}': r'\Device\NPF_{A2D75178-0C67-4FB5-8859-F56D7CC167CB}',
+        r'\Device\NPF_{A2D75178-0C67-4FB5-8859-F56D7CC167CB}': r'\Device\NPF_{A2D75178-0C67-4FB5-8859-F56D7CC167CB}',
+        # Anything an operator wrote by hand that is not a GUID name stays as it is.
+        r'\Device\NPF_Loopback': r'\Device\NPF_Loopback',
+    }
+    for saved, expected in cases.items():
+        command = f"$config = [pscustomobject]@{{CaptureInterface='{saved}'}}\n{snippet}\n$captureInterface"
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-Command', command],
+                                capture_output=True, text=True, timeout=60)
+        assert result.stdout.strip() == expected, saved + result.stderr
+
+
 def test_touched_scripts_parse():
     if sys.platform != 'win32':
         pytest.skip('PowerShell parser')

@@ -55,9 +55,9 @@ async function chatTitle(question:string, model?:string|null):Promise<string|nul
 
 export type ChatModelChoice = { id:string; label:string; note:string };
 /* Who answers by default, and the models the chat box may pick (none: no picker). Server data, so each field is checked before use. */
-export type ChatOptions = { provider:'purdue'|'local'; choices:ChatModelChoice[]; current:string };
+export type ChatOptions = { provider:'purdue'|'local'; choices:ChatModelChoice[]; current:string; webSearch:boolean };
 const isChoice = (value:unknown):value is ChatModelChoice => !!value && typeof value==='object' && ['id','label','note'].every(key=>typeof (value as Record<string,unknown>)[key]==='string');
-async function chatProvider():Promise<ChatOptions> { const body=await request('/api/chat/provider'); return { provider: body && body.provider==='purdue' ? 'purdue' : 'local', choices: Array.isArray(body?.choices) ? body.choices.filter(isChoice) : [], current: typeof body?.current==='string' ? body.current : 'local' }; }
+async function chatProvider():Promise<ChatOptions> { const body=await request('/api/chat/provider'); return { provider: body && body.provider==='purdue' ? 'purdue' : 'local', choices: Array.isArray(body?.choices) ? body.choices.filter(isChoice) : [], current: typeof body?.current==='string' ? body.current : 'local', webSearch: body?.web_search===true }; }
 export type ChatModels = { choices:ChatModelChoice[]; current:string; key_configured:boolean };
 const chatModels = ():Promise<ChatModels> => request('/api/chat/models');
 const setChatModel = (model:string) => request('/api/chat/model',{method:'PUT',body:JSON.stringify({model})});

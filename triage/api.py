@@ -13,7 +13,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi import Path as PathParam
@@ -659,8 +659,12 @@ def chat_provider(user=Depends(require(*ALL_ROLES))) -> dict:
     cannot say "local" while questions still go out."""
     from .cloud_model import PurdueChatModel
     model = chat_model()
+    from .web_search import enabled
     return {"provider": "purdue" if isinstance(model, PurdueChatModel) else "local",
-            "choices": chat_choices(), "current": _answering_choice(model)}
+            "choices": chat_choices(), "current": _answering_choice(model),
+            # So the footer never says "stays on this computer" while alert
+            # questions search the web.
+            "web_search": enabled()}
 
 
 def _windows_services():
@@ -865,8 +869,8 @@ def _chat_alerts(alert_id: int | None) -> list[AlertDetailOwner] | None:
     the requested alert does not exist.
 
     The owner shape even for analysts: chat answers are written for the owner, and
-    raw records, rule ids and analyst reasoning are exactly the attacker-written or
-    analyst-only text the prompt must not carry.
+    rule ids and analyst reasoning are analyst-only text the prompt must not carry.
+    The focused alert's raw record goes separately (_chat_context), as a capped quote.
     """
     if alert_id is not None:
         detail = db.get_alert(alert_id)
@@ -882,15 +886,33 @@ def _chat_alerts(alert_id: int | None) -> list[AlertDetailOwner] | None:
     return alerts
 
 
+def _chat_context(alert_id: int | None) -> tuple[list[AlertDetailOwner], Any, list[dict[str, str]]] | None:
+    """(alerts, raw record and web results of the alert asked about) for a chat; None for a missing
+    alert. Every role gets the raw record of a focused alert, so the AI can say what
+    exactly happened (owner-approved, 2026-10-10): build_chat_context quotes only a
+    capped, scrubbed excerpt of it inside the evidence fence. One read, so the quote
+    and the alert line always describe the same record. Web results (Brave, only
+    with a stored key) are searched for the alert's public identifiers and its one
+    public outside address or domain, never this network's own; see triage.web_search. Runs in a worker thread, so the search never blocks the loop."""
+    if alert_id is None:
+        return _chat_alerts(None) or [], None, []
+    detail = db.get_alert(alert_id)
+    if detail is None:
+        return None
+    from .web_search import results_for
+    return [AlertDetailOwner.from_detail(detail)], detail.raw, results_for(detail)
+
+
 @app.post("/api/chat", response_model=ChatReply)
 async def chat(body: ChatRequest, user=Depends(require(*ALL_ROLES))) -> ChatReply:
-    alerts = await asyncio.to_thread(_chat_alerts, body.alert_id)
-    if alerts is None: raise HTTPException(404, "Alert not found")
+    context = await asyncio.to_thread(_chat_context, body.alert_id)
+    if context is None: raise HTTPException(404, "Alert not found")
+    alerts, raw, web = context
     # Inference runs in a worker thread inside the model runtime; this await keeps
     # the event loop, and so every other dashboard request, responsive meanwhile.
     system = await asyncio.to_thread(_chat_system_prompt)
     reply, available = await answer_chat(chat_model(body.model), body.messages, alerts, focused=body.alert_id is not None,
-                                         system=system)
+                                         system=system, raw=raw, web=web)
     return ChatReply(reply=reply, available=available)
 
 
@@ -903,13 +925,14 @@ async def chat_stream(body: ChatRequest, user=Depends(require(*ALL_ROLES))) -> S
     the stream never errors, it ends with a "done" event. Starlette cancels the
     generator when the browser disconnects, which stops generation.
     """
-    alerts = await asyncio.to_thread(_chat_alerts, body.alert_id)
-    if alerts is None: raise HTTPException(404, "Alert not found")
+    context = await asyncio.to_thread(_chat_context, body.alert_id)
+    if context is None: raise HTTPException(404, "Alert not found")
+    alerts, raw, web = context
     system = await asyncio.to_thread(_chat_system_prompt)
 
     async def events():
         async for event in stream_chat(chat_model(body.model), body.messages, alerts, focused=body.alert_id is not None,
-                                       system=system):
+                                       system=system, raw=raw, web=web):
             yield json.dumps(event) + "\n"
 
     # no-store: an answer about this network must not sit in any cache.
@@ -924,14 +947,15 @@ class ChatWarm(BaseModel):
 @app.post("/api/chat/warm")
 async def chat_warm(body: ChatWarm, user=Depends(require(*ALL_ROLES))) -> dict[str, bool]:
     """Called when the owner starts typing: the model reads the instructions and the
-    alert context it will need, so the answer starts sooner. Same owner-safe context
-    as /api/chat. Cheap to repeat (an unchanged prompt is already read) and skipped
+    alert context it will need, so the answer starts sooner. Same context, raw quote
+    included, as /api/chat. Cheap to repeat (an unchanged prompt is already read) and skipped
     while the model is busy."""
-    alerts = await asyncio.to_thread(_chat_alerts, body.alert_id)
-    if alerts is None: raise HTTPException(404, "Alert not found")
+    context = await asyncio.to_thread(_chat_context, body.alert_id)
+    if context is None: raise HTTPException(404, "Alert not found")
+    alerts, raw, web = context
     system = await asyncio.to_thread(_chat_system_prompt)
     return {"warmed": await warm_chat(chat_model(body.model), alerts, focused=body.alert_id is not None,
-                                       system=system)}
+                                       system=system, raw=raw, web=web)}
 
 
 @app.post("/api/chat/title", response_model=ChatTitle)

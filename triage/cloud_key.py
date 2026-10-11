@@ -49,7 +49,7 @@ def installed_runtime() -> bool:
     return (Path(sys.executable).resolve().parent.parent / "setup" / "install.ps1").is_file()
 
 
-def _crypt(data: bytes, protect: bool) -> bytes:
+def _crypt(data: bytes, protect: bool, entropy_bytes: bytes = _ENTROPY) -> bytes:
     import ctypes
     from ctypes import wintypes
 
@@ -62,7 +62,7 @@ def _crypt(data: bytes, protect: bool) -> bytes:
 
     crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    source, entropy, result = blob(data), blob(_ENTROPY), Blob()
+    source, entropy, result = blob(data), blob(entropy_bytes), Blob()
     flags = 0x1 | 0x4  # CRYPTPROTECT_UI_FORBIDDEN | CRYPTPROTECT_LOCAL_MACHINE
     call = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
     if protect:

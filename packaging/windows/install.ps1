@@ -182,12 +182,23 @@ try {
         $address = Get-NetIPAddress -InterfaceIndex $route.InterfaceIndex -AddressFamily IPv4 |
             Where-Object { $_.AddressState -eq 'Preferred' } | Select-Object -First 1
         [ordered]@{HomeNet="$($address.IPAddress)/$($address.PrefixLength)";
-            CaptureInterface="\Device\NPF_$(([guid]$adapter.InterfaceGuid).ToString('B'))";
+            CaptureInterface="\Device\NPF_$(([guid]$adapter.InterfaceGuid).ToString('B').ToUpperInvariant())";
             SuricataDir=(Join-Path $AppDir 'Suricata'); ApiPort=8000; ModelPath='';
             NpcapOemInstaller=''} | ConvertTo-Json | Set-Content $configPath -Encoding utf8
     }
     # Model and OllamaPort in configurations from earlier releases are ignored.
     $config = Get-Content $configPath -Raw | ConvertFrom-Json
+    # Suricata 8.0.7 finds the capture adapter by comparing this GUID, case-sensitively,
+    # with Windows' adapter name, which is upper case. A lower-case GUID (what
+    # [guid].ToString('B') gives, and what earlier releases saved in windows.json) is
+    # not found (0x490), and Suricata then frees a string constant while logging that
+    # failure: heap corruption (0xc0000374) seconds into every capture, with nothing
+    # ever written to eve.json. Npcap accepts either case. Fixed here, not only when
+    # the file is first written, so upgrades repair existing installs.
+    $captureInterface = [string]$config.CaptureInterface
+    if ($captureInterface -match '^(.*)(\{[0-9A-Fa-f-]{36}\})$') {
+        $captureInterface = $Matches[1] + $Matches[2].ToUpperInvariant()
+    }
     if ([int]$config.ApiPort -lt 1024 -or [int]$config.ApiPort -gt 65535) { throw 'ApiPort must be in 1024..65535.' }
     # The dashboard shortcut and setup's Finish page run as the signed-in user, who
     # cannot read the admin-only windows.json, so the port is copied here: <app>\setup
@@ -358,7 +369,7 @@ try {
     # the services are re-registered: if setup fails earlier, the API still finds it.
     $shutdownMarker = "$DataDir\config\shutdown.json"
     if (Test-Path -LiteralPath $shutdownMarker) { Remove-Item -LiteralPath $shutdownMarker -Force }
-    Register 'LightHouse-Suricata' $suricataExe.FullName "-c `"$DataDir\config\suricata.yaml`" -i `"$($config.CaptureInterface)`" -l `"$DataDir\suricata`"" @("PATH=$env:PATH;$env:WINDIR\System32\Npcap")
+    Register 'LightHouse-Suricata' $suricataExe.FullName "-c `"$DataDir\config\suricata.yaml`" -i `"$captureInterface`" -l `"$DataDir\suricata`"" @("PATH=$env:PATH;$env:WINDIR\System32\Npcap")
     Nssm @('set', 'LightHouse-Suricata', 'DependOnService', 'npcap')
     Start-Service LightHouse-Suricata
     $environment = @('PYTHONUNBUFFERED=1', 'LIGHTHOUSE_DESKTOP=0', "LIGHTHOUSE_DB_PATH=$DataDir\lighthouse.db",
