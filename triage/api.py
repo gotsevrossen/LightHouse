@@ -1037,5 +1037,20 @@ def api_healthcheck():
 # bundle_dir() is the working directory from source and the PyInstaller extraction
 # directory in a frozen build, where nothing is relative to the working directory.
 STATIC_DIR = Path(os.getenv("LIGHTHOUSE_STATIC_DIR", "").strip() or bundle_dir() / "dashboard" / "dist")
+
+
+class DashboardFiles(StaticFiles):
+    """The built dashboard, revalidated on every load. With no Cache-Control header
+    Edge reused a cached index.html for hours (heuristic freshness), so after an
+    update the window kept running the old dashboard until a hard refresh. no-cache
+    still lets the browser keep the files; it only asks first (an ETag check, a 304
+    on loopback), so a new build shows on the next load."""
+
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 if STATIC_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="dashboard")
+    app.mount("/", DashboardFiles(directory=str(STATIC_DIR), html=True), name="dashboard")

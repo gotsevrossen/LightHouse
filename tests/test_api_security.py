@@ -373,3 +373,27 @@ def test_ingestion_health_requires_analyst_and_reports_failure(api, client, tmp_
     response = client.get('/api/advanced/ingestion', headers=auth(analyst))
     assert response.status_code == 200
     assert response.json() == {'ok': False, 'channels': {'Security': 'error'}}
+
+
+def test_dashboard_is_revalidated_so_updates_show_without_a_hard_refresh(tmp_path, monkeypatch):
+    """Edge reused a cached index.html for hours after an update; no-cache makes it
+    ask the server (a cheap ETag check) on every load."""
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text('<script type="module" src="/assets/index-NEW.js"></script>', encoding="utf-8")
+    (dist / "assets" / "index-NEW.js").write_text("console.log(1)", encoding="utf-8")
+    monkeypatch.setenv("LIGHTHOUSE_DB_PATH", str(tmp_path / "static.db"))
+    monkeypatch.setenv("LIGHTHOUSE_STATIC_DIR", str(dist))
+    monkeypatch.delenv("LIGHTHOUSE_DEV", raising=False)
+    sys.modules.pop("triage.api", None)
+    try:
+        client = TestClient(importlib.import_module("triage.api").app)
+        for path in ("/", "/index.html", "/assets/index-NEW.js"):
+            response = client.get(path)
+            assert response.status_code == 200, path
+            assert response.headers["cache-control"] == "no-cache", path
+        # A repeat load with the ETag is a 304, so revalidating costs next to nothing.
+        etag = client.get("/").headers["etag"]
+        assert client.get("/", headers={"If-None-Match": etag}).status_code == 304
+    finally:
+        sys.modules.pop("triage.api", None)

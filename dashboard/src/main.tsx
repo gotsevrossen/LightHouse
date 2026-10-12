@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { api, AiInstructions, Alert, DEFAULT_ANSWER_STYLE, AuditEntry, ChatMessage, ChatModelChoice, ChatModels, ChatOptions, getSession, login, logout, Monitoring, onSessionExpired, Session, statusOf, UpdateInfo } from './api';
 import { clip, Conversation, fullTime, loadConversations, MAX_QUESTION, newId, relativeTime, retryTurns, saveConversations, titleFor, toChatMessages, Turn } from './conversations';
 import { notificationPermission, notificationsOff, setNotificationsOff, useAlertNotifications } from './notifications';
+import { newBuildAvailable } from './build';
 import { SensorId, SensorStatus, watchStatus, WatchStatus } from './api';
 import './styles.css';
 import './sidebar.css';
@@ -1435,6 +1436,9 @@ const FOLLOW_SLACK_PX = 48;
    GenAI Studio key, or picks another default), and the footer must keep telling the
    truth about where a question goes. */
 const CHAT_OPTIONS_REFRESH_MS = 60_000;
+/* How often an open window asks whether an update brought a new dashboard build
+   (one small request to this computer). */
+const BUILD_CHECK_MS = 60_000;
 /* 'unknown': the provider could not be fetched, so the footer claims neither way. */
 type Provider = 'purdue' | 'local' | 'unknown';
 const EXPIRED_NOTICE = 'Your sign-in expired. Please sign in again.';
@@ -1598,6 +1602,26 @@ function Dashboard({ session, signOut }: { session: Session; signOut: () => Prom
   const [release, setRelease] = useState<UpdateInfo | null>(null);
   useEffect(() => {
     if (isAdmin) api.updates().then(info => setRelease(info.available ? info : null)).catch(() => setRelease(null));
+  }, []);
+
+  /* After an update the server serves a new build, but a window that stayed open
+     keeps running the old one. Checked every minute and on focus; reloaded only when
+     nothing would be lost: no answer being written, nothing typed in the chat box,
+     and not on Settings or Admin, which hold unsaved edits. Chats are in
+     localStorage, so they survive the reload. */
+  const reloadable = useRef(true);
+  reloadable.current = !thinking && !message.trim() && view !== 'settings' && view !== 'admin';
+  useEffect(() => {
+    let checking = false;
+    const check = async () => {
+      if (checking || !reloadable.current) return;
+      checking = true;
+      try { if (await newBuildAvailable() && reloadable.current) window.location.reload(); }
+      finally { checking = false; }
+    };
+    const timer = window.setInterval(check, BUILD_CHECK_MS);
+    window.addEventListener('focus', check);
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', check); };
   }, []);
 
   /* Every change goes through the latest state, never a render's snapshot: a reply
