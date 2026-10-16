@@ -142,6 +142,60 @@ def test_wrong_current_password_does_not_change_anything(api, client):
     assert login(client, "analyst1", ANALYST_PASSWORD)
 
 
+def test_forced_change_must_pick_a_different_password(api, client):
+    """A forced change exists because someone else knows the old password."""
+    api.db.create_user("owner1", OWNER_PASSWORD, "owner", must_change_password=True)
+    token = login(client, "owner1", OWNER_PASSWORD)
+    same = client.post("/api/auth/password", headers=auth(token),
+                       json={"current_password": OWNER_PASSWORD, "new_password": OWNER_PASSWORD})
+    assert same.status_code == 422 and "different" in same.json()["detail"]
+    assert client.get("/api/alerts", headers=auth(token)).status_code == 403, "still owes the change"
+    # A wrong current password is still a 401 even when both fields match: no oracle.
+    wrong = client.post("/api/auth/password", headers=auth(token),
+                        json={"current_password": "not-the-password", "new_password": "not-the-password"})
+    assert wrong.status_code == 401
+    changed = client.post("/api/auth/password", headers=auth(token),
+                          json={"current_password": OWNER_PASSWORD, "new_password": "a-brand-new-password"})
+    assert changed.status_code == 200
+    assert client.get("/api/alerts", headers=auth(token)).status_code == 200
+
+
+def test_preferences_take_only_known_values(api, client):
+    api.db.create_user("owner1", OWNER_PASSWORD, "owner")
+    token = login(client, "owner1", OWNER_PASSWORD)
+    for value in ("relaxed", "balanced", "strict"):
+        response = client.put("/api/preferences", headers=auth(token), json={"key": "alert_sensitivity", "value": value})
+        assert response.status_code == 200, value
+    for value in ("paranoid", "", "x" * 10_000):
+        response = client.put("/api/preferences", headers=auth(token), json={"key": "alert_sensitivity", "value": value})
+        assert response.status_code == 422, value[:20]
+    too_long_key = client.put("/api/preferences", headers=auth(token), json={"key": "k" * 1000, "value": "high"})
+    assert too_long_key.status_code == 422
+    assert client.get("/api/preferences", headers=auth(token)).json() == {"alert_sensitivity": "strict"}
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("get", "/api/alerts/{big}", None),
+    ("patch", "/api/alerts/{big}/status", {"status": "resolved"}),
+    ("get", "/api/alerts/0", None),
+    ("post", "/api/chat", {"messages": [{"role": "user", "content": "hi"}], "alert_id": "{big}"}),
+    ("post", "/api/chat/stream", {"messages": [{"role": "user", "content": "hi"}], "alert_id": "{big}"}),
+    ("post", "/api/chat/warm", {"alert_id": "{big}"}),
+    ("post", "/api/chat/warm", {"alert_id": 0}),
+    ("patch", "/api/users/{big}/role", {"role": "owner"}),
+    ("get", "/api/admin/activity?before={big}", None),
+])
+def test_oversized_ids_are_a_422_not_a_500(api, client, method, path, body):
+    big = 10**20
+    api.db.create_user("boss", ADMIN_PASSWORD, "admin")
+    token = login(client, "boss", ADMIN_PASSWORD)
+    if body is not None:
+        body = {key: big if value == "{big}" else value for key, value in body.items()}
+    response = getattr(client, method)(path.format(big=big), headers=auth(token),
+                                       **({"json": body} if body is not None else {}))
+    assert response.status_code == 422, response.text
+
+
 def test_admin_reset_revokes_sessions_and_forces_a_change(api, client):
     api.db.create_user("boss", ADMIN_PASSWORD, "admin")
     api.db.create_user("analyst1", ANALYST_PASSWORD, "analyst")
@@ -186,6 +240,34 @@ def test_seeded_admin_password_is_random_and_must_be_changed(tmp_path):
 
     session = db.authenticate("admin", password)
     assert session and session["must_change_password"] is True
+
+
+def test_windows_first_run_password_file_lives_until_the_admin_changes_it(tmp_path, monkeypatch):
+    """The Windows installer points LIGHTHOUSE_FIRST_RUN_DIR at the protected data
+    directory, because the service logs holding the banner are rotated."""
+    handoff = tmp_path / "data"; handoff.mkdir()
+    monkeypatch.setenv("LIGHTHOUSE_FIRST_RUN_DIR", str(handoff))
+    monkeypatch.delenv("LIGHTHOUSE_DESKTOP", raising=False)
+    monkeypatch.setenv("LIGHTHOUSE_DB_PATH", str(tmp_path / "first.db"))
+    monkeypatch.setenv("LIGHTHOUSE_STATIC_DIR", str(tmp_path / "no-dashboard-build"))
+    sys.modules.pop("triage.api", None)
+    try:
+        module = importlib.import_module("triage.api")
+        password_file = handoff / "first-run-password.txt"
+        password = password_file.read_text(encoding="utf-8").strip()
+        assert len(password) >= 20
+        client = TestClient(module.app)
+        token = login(client, "admin", password)
+        # Signing in is not enough; it goes when the admin sets their own password.
+        assert password_file.exists()
+        changed = client.post("/api/auth/password", headers=auth(token),
+                              json={"current_password": password, "new_password": "the-owners-own-password"})
+        assert changed.status_code == 200
+        assert not password_file.exists()
+        # A restart does not write a new one: the account already exists.
+        assert module.db.initialize() is None and not password_file.exists()
+    finally:
+        sys.modules.pop("triage.api", None)
 
 
 def test_must_change_password_blocks_normal_routes(api, client):
@@ -291,3 +373,27 @@ def test_ingestion_health_requires_analyst_and_reports_failure(api, client, tmp_
     response = client.get('/api/advanced/ingestion', headers=auth(analyst))
     assert response.status_code == 200
     assert response.json() == {'ok': False, 'channels': {'Security': 'error'}}
+
+
+def test_dashboard_is_revalidated_so_updates_show_without_a_hard_refresh(tmp_path, monkeypatch):
+    """Edge reused a cached index.html for hours after an update; no-cache makes it
+    ask the server (a cheap ETag check) on every load."""
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text('<script type="module" src="/assets/index-NEW.js"></script>', encoding="utf-8")
+    (dist / "assets" / "index-NEW.js").write_text("console.log(1)", encoding="utf-8")
+    monkeypatch.setenv("LIGHTHOUSE_DB_PATH", str(tmp_path / "static.db"))
+    monkeypatch.setenv("LIGHTHOUSE_STATIC_DIR", str(dist))
+    monkeypatch.delenv("LIGHTHOUSE_DEV", raising=False)
+    sys.modules.pop("triage.api", None)
+    try:
+        client = TestClient(importlib.import_module("triage.api").app)
+        for path in ("/", "/index.html", "/assets/index-NEW.js"):
+            response = client.get(path)
+            assert response.status_code == 200, path
+            assert response.headers["cache-control"] == "no-cache", path
+        # A repeat load with the ETag is a 304, so revalidating costs next to nothing.
+        etag = client.get("/").headers["etag"]
+        assert client.get("/", headers={"If-None-Match": etag}).status_code == 304
+    finally:
+        sys.modules.pop("triage.api", None)

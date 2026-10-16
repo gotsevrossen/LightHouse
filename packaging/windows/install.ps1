@@ -1,5 +1,12 @@
 param([Parameter(Mandatory=$true)][string]$AppDir, [switch]$Unattended,
-      [string]$DataDir = "$env:ProgramData\LightHouse")
+      # Data lives next to the program, on the drive the owner chose.
+      [string]$DataDir = '',
+      # Where an earlier version was installed, if somewhere else; removed on success.
+      [string]$PreviousAppDir = '')
+if (!$DataDir) { $DataDir = Join-Path $AppDir 'data' }
+# Releases before data moved next to the program kept it here.
+$LegacyDataDir = "$env:ProgramData\LightHouse"
+$LighthouseServices = @('LightHouse-Ingestion', 'LightHouse-API', 'LightHouse-Suricata')
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -11,9 +18,27 @@ try {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run the LightHouse installer as administrator.' }
     . "$PSScriptRoot\security.ps1"
+    Assert-InstallVolume $AppDir
+    # Nothing may hold the program or data files while they are locked down or moved.
+    foreach ($name in $LighthouseServices) {
+        $service = Get-Service $name -ErrorAction SilentlyContinue
+        if ($service -and $service.Status -ne 'Stopped') { Stop-Service $name -Force; $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60)) }
+    }
+    Protect-AppDirectory $AppDir -Except @((Split-Path $DataDir -Leaf))
+    $dataFull = [IO.Path]::GetFullPath($DataDir).TrimEnd('\')
+    if ((Test-Path -LiteralPath $LegacyDataDir) -and ($dataFull -ne [IO.Path]::GetFullPath($LegacyDataDir).TrimEnd('\')) -and
+        !(Test-Path -LiteralPath "$DataDir\lighthouse.db") -and @(Get-ChildItem -LiteralPath $LegacyDataDir -Force).Count) {
+        # An earlier release's data: verified as trusted (ordinary users can create
+        # folders in ProgramData) before anything in it is reused, then moved.
+        Set-PrivateTree ([IO.Path]::GetFullPath($LegacyDataDir)) $true
+        Protect-DataDirectory $DataDir
+        Assert-FreeSpace $DataDir ((Get-TreeSize $LegacyDataDir) + 512MB)
+        Write-Host "Moving existing LightHouse data from $LegacyDataDir to $DataDir"
+        Move-DataTree $LegacyDataDir $DataDir
+    }
     Protect-DataDirectory $DataDir
     $dependencyHashes = Get-Content "$PSScriptRoot\dependency-hashes.json" -Raw | ConvertFrom-Json
-    New-Item -ItemType Directory -Force "$DataDir\logs", "$DataDir\cache", "$DataDir\config", "$DataDir\state", "$DataDir\models", "$DataDir\rules", "$DataDir\suricata", "$AppDir\tools" | Out-Null
+    New-Item -ItemType Directory -Force "$DataDir\logs", "$DataDir\cache", "$DataDir\cache\llm-state", "$DataDir\config", "$DataDir\state", "$DataDir\models", "$DataDir\rules", "$DataDir\suricata", "$AppDir\tools" | Out-Null
 } catch {
     # The data tree is not trusted yet, so the reason goes only to the result file.
     Write-Host "INSTALLATION FAILED: $_"
@@ -33,6 +58,27 @@ function Run([string]$File, [string]$Arguments) {
     if ($process.ExitCode -eq 3010) { Write-Host 'Dependency requests a reboot; reboot after setup.' }
     elseif ($process.ExitCode -ne 0) { throw "$File failed with exit code $($process.ExitCode)" }
 }
+function Test-Suricata([string]$Exe, [string]$Python) {
+    # -T treats any rule that fails to parse as fatal, and ET Open ships rules using
+    # keywords this build lacks (file.magic). Disable exactly those rules once and
+    # test again; a configuration error, or a ruleset that does not match the
+    # engine, still stops setup. Output goes to the transcript, not a hidden window.
+    $testDir = "$DataDir\cache\suricata-test"
+    for ($attempt = 1; ; $attempt++) {
+        Remove-Item -LiteralPath $testDir -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force $testDir | Out-Null
+        Write-Host "Testing Suricata configuration (attempt $attempt)"
+        $process = Start-Process -FilePath $Exe -ArgumentList "-T -c `"$DataDir\config\suricata.yaml`" -l `"$testDir`"" `
+            -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput "$testDir\stdout.txt" -RedirectStandardError "$testDir\stderr.txt"
+        $logs = @("$testDir\suricata.log", "$testDir\stdout.txt", "$testDir\stderr.txt") | Where-Object { Test-Path -LiteralPath $_ }
+        $output = if ($logs) { Get-Content -LiteralPath $logs } else { @() }
+        $output | Where-Object { $_ -match 'Error|Warning' } | Select-Object -Unique -First 40 | ForEach-Object { Write-Host "  $_" }
+        if ($process.ExitCode -eq 0) { return }
+        if ($attempt -ge 2) { throw "Suricata configuration test failed with exit code $($process.ExitCode); the errors are above." }
+        & $Python "$AppDir\setup\disable_failed_rules.py" "$DataDir\rules\emerging-all.rules" "$DataDir\rules\disabled-by-lighthouse.txt" @logs
+        if ($LASTEXITCODE -ne 0) { throw "Suricata configuration test failed with exit code $($process.ExitCode); the errors are above." }
+    }
+}
 function Assert-Dependency([string]$Path, [string]$Name) {
     $hash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
     Write-Host "$Name SHA256 $hash"
@@ -40,7 +86,9 @@ function Assert-Dependency([string]$Path, [string]$Name) {
         Assert-Publisher $Path @('Microsoft Corporation')
     } elseif ($Name -eq 'Sysmon.zip') {
         Assert-SysmonArchive $Path "$DataDir\cache\sysmon-verify"
-    } elseif ($Name -match '\.(exe|msi|zip|gguf)$') {
+    } elseif ($Name -match '\.(exe|msi|zip|gguf|xml)$') {
+        # Pinned downloads, including the commit-pinned Sysmon configuration. The ET
+        # Open rules archive (.tar.gz) changes daily and has no hash to pin.
         Assert-FileHash $Path $dependencyHashes.$Name $hash
     }
 }
@@ -74,6 +122,16 @@ function Nssm([string[]]$Arguments) {
 }
 function Register([string]$Name, [string]$Exe, [string]$Arguments, [string[]]$Environment) {
     if (!(Get-Service $Name -ErrorAction SilentlyContinue)) { Nssm @('install', $Name, $Exe) }
+    else {
+        # A service registered by an install in another folder still starts that
+        # folder's nssm.exe; point it at this one before the old folder is removed.
+        $wrapper = "$AppDir\tools\nssm.exe"
+        $current = (Get-CimInstance Win32_Service -Filter "Name='$Name'").PathName
+        if ($current.Trim('"') -ne $wrapper) {
+            & sc.exe config $Name binPath= "`"$wrapper`"" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not move service $Name to $wrapper (sc.exe $LASTEXITCODE)" }
+        }
+    }
     Nssm @('set', $Name, 'Application', $Exe)
     Nssm @('set', $Name, 'AppParameters', $Arguments)
     Nssm @('set', $Name, 'AppDirectory', $AppDir)
@@ -86,6 +144,26 @@ function Register([string]$Name, [string]$Exe, [string]$Arguments, [string[]]$En
     Nssm @('set', $Name, 'AppRotateOnline', '1')
     Nssm @('set', $Name, 'AppRotateBytes', '10485760')
     Nssm (@('set', $Name, 'AppEnvironmentExtra') + $Environment)
+}
+function Grant-InteractiveStart([string]$Name) {
+    # After an admin chooses "Shut down" in the dashboard, the owner restarts
+    # LightHouse from its shortcut without admin rights. Interactive users get start,
+    # query status, interrogate and read (RPLCLORC) on this one service; starting it is
+    # harmless (Windows does the same at every boot). Stopping it and changing its
+    # configuration or permissions stay with Administrators and SYSTEM.
+    $ace = '(A;;RPLCLORC;;;IU)'
+    $output = & sc.exe sdshow $Name
+    if ($LASTEXITCODE -ne 0) { throw "Could not read the permissions of service $Name (sc.exe $LASTEXITCODE)" }
+    $sddl = (@($output) | Where-Object { $_ -and $_.Trim() } | Select-Object -First 1)
+    $dacl = if ($sddl) { $sddl.Trim().IndexOf('D:') } else { -1 }
+    if ($dacl -lt 0) { throw "Service $Name has no readable permission list: $sddl" }
+    $sddl = $sddl.Trim()
+    if ($sddl.Contains($ace)) { return }
+    # The new entry goes at the end of the DACL, before any SACL (S:).
+    $end = $sddl.IndexOf('S:', $dacl)
+    if ($end -lt 0) { $end = $sddl.Length }
+    & sc.exe sdset $Name $sddl.Insert($end, $ace) | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not let users start service $Name (sc.exe $LASTEXITCODE)" }
 }
 function Wait-Http([string]$Url) {
     for ($attempt = 0; $attempt -lt 90; $attempt++) {
@@ -104,13 +182,55 @@ try {
         $address = Get-NetIPAddress -InterfaceIndex $route.InterfaceIndex -AddressFamily IPv4 |
             Where-Object { $_.AddressState -eq 'Preferred' } | Select-Object -First 1
         [ordered]@{HomeNet="$($address.IPAddress)/$($address.PrefixLength)";
-            CaptureInterface="\Device\NPF_$(([guid]$adapter.InterfaceGuid).ToString('B'))";
-            SuricataDir='C:\Suricata'; ApiPort=8000; ModelPath='';
+            CaptureInterface="\Device\NPF_$(([guid]$adapter.InterfaceGuid).ToString('B').ToUpperInvariant())";
+            SuricataDir=(Join-Path $AppDir 'Suricata'); ApiPort=8000; ModelPath='';
             NpcapOemInstaller=''} | ConvertTo-Json | Set-Content $configPath -Encoding utf8
     }
     # Model and OllamaPort in configurations from earlier releases are ignored.
     $config = Get-Content $configPath -Raw | ConvertFrom-Json
+    # Suricata 8.0.7 finds the capture adapter by comparing this GUID, case-sensitively,
+    # with Windows' adapter name, which is upper case. A lower-case GUID (what
+    # [guid].ToString('B') gives, and what earlier releases saved in windows.json) is
+    # not found (0x490), and Suricata then frees a string constant while logging that
+    # failure: heap corruption (0xc0000374) seconds into every capture, with nothing
+    # ever written to eve.json. Npcap accepts either case. Fixed here, not only when
+    # the file is first written, so upgrades repair existing installs.
+    $captureInterface = [string]$config.CaptureInterface
+    if ($captureInterface -match '^(.*)(\{[0-9A-Fa-f-]{36}\})$') {
+        $captureInterface = $Matches[1] + $Matches[2].ToUpperInvariant()
+    }
     if ([int]$config.ApiPort -lt 1024 -or [int]$config.ApiPort -gt 65535) { throw 'ApiPort must be in 1024..65535.' }
+    # The dashboard shortcut and setup's Finish page run as the signed-in user, who
+    # cannot read the admin-only windows.json, so the port is copied here: <app>\setup
+    # is readable by Users and writable only by administrators. Only the port, never
+    # anything secret.
+    Set-Content -LiteralPath "$AppDir\setup\api-port.txt" -Value ([int]$config.ApiPort) -Encoding ascii
+    # Earlier releases put Suricata at the root of the Windows drive, where every
+    # signed-in user may add files to a new folder, while suricata.exe runs as
+    # LocalSystem. It moves into the locked program folder, on any drive. So does a
+    # Suricata inside the previous program folder when LightHouse itself moved, since
+    # that folder is deleted at the end. Only LightHouse's own locations are moved; a
+    # folder the operator chose stays where it is and gets the program folder's
+    # protection (Protect-SuricataDirectory).
+    $relocateSuricata = ($config.SuricataDir -in @('C:\Suricata', "$env:SystemDrive\Suricata")) -or
+        ($PreviousAppDir -and (Test-PathInside $config.SuricataDir $PreviousAppDir) -and !(Test-PathInside $config.SuricataDir $AppDir))
+    $oldSuricataDir = $config.SuricataDir
+    if ($relocateSuricata) {
+        $config.SuricataDir = Join-Path $AppDir 'Suricata'
+        $config | ConvertTo-Json | Set-Content $configPath -Encoding utf8
+    }
+    if (!(Test-PathInside $config.SuricataDir $AppDir)) {
+        Assert-SuricataLocation $config.SuricataDir $AppDir $DataDir
+        if (Test-Path -LiteralPath $config.SuricataDir) {
+            # An existing folder outside the program folder: what is in it will run as
+            # LocalSystem, so it is reused only if nobody but administrators and SYSTEM
+            # could have changed it. Checked before its permissions are reset.
+            try { Assert-TrustedTree $config.SuricataDir }
+            catch { throw "SuricataDir $($config.SuricataDir) could be changed by non-administrators, so its files cannot be trusted to run as SYSTEM ($_). Uninstall Suricata in Apps & features, delete that folder, and run setup again." }
+        }
+        # Locked (created locked if new) before the MSI writes into it.
+        Protect-SuricataDirectory $config.SuricataDir $AppDir $DataDir
+    }
     if (!(Get-Service npcap -ErrorAction SilentlyContinue)) {
         if ($config.NpcapOemInstaller) {
             $oem = "$DataDir\cache\npcap-oem.exe"
@@ -128,14 +248,31 @@ try {
         if (!(Get-Service npcap -ErrorAction SilentlyContinue)) { throw 'Npcap driver was not installed.' }
     }
     $suricataMsi = Fetch 'https://www.openinfosecfoundation.org/download/windows/Suricata-8.0.7-1-64bit.msi' 'Suricata-8.0.7-1-64bit.msi'
-    $repair = if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{42AB4288-8940-4B7D-97E2-75901A1D188F}') { 'REINSTALL=ALL REINSTALLMODE=vomus' } else { '' }
+    $suricataProduct = '{42AB4288-8940-4B7D-97E2-75901A1D188F}'
+    $suricataInstalled = Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$suricataProduct"
+    if ($relocateSuricata -and $suricataInstalled) {
+        # An MSI repair cannot change its install folder, so the old copy is removed
+        # and Suricata is installed fresh in the new one. Its rules, configuration and
+        # logs live in the data folder, so nothing of LightHouse's is lost.
+        Write-Host "Moving Suricata from $oldSuricataDir to $($config.SuricataDir)"
+        Run 'msiexec.exe' "/x $suricataProduct /qn /norestart /L*v `"$DataDir\logs\suricata-msi-remove.log`""
+        if ((Test-Path -LiteralPath $oldSuricataDir) -and !@(Get-ChildItem -LiteralPath $oldSuricataDir -Recurse -Force -File).Count) {
+            Remove-Item -LiteralPath $oldSuricataDir -Recurse -Force
+        }
+        $suricataInstalled = $false
+    }
+    $repair = if ($suricataInstalled) { 'REINSTALL=ALL REINSTALLMODE=vomus' } else { '' }
     Run 'msiexec.exe' "/i `"$suricataMsi`" /qn /norestart $repair INSTALLDIR=`"$($config.SuricataDir)`" /L*v `"$DataDir\logs\suricata-msi.log`""
+    # Whatever the MSI wrote, and wherever, gets the program folder's protection.
+    Protect-SuricataDirectory $config.SuricataDir $AppDir $DataDir
     $suricataExe = Get-ChildItem $config.SuricataDir -Filter suricata.exe -Recurse | Select-Object -First 1
     if (!$suricataExe) { throw "Suricata not found in $($config.SuricataDir)" }
     $sysmonZip = Fetch 'https://download.sysinternals.com/files/Sysmon.zip' 'Sysmon.zip'
     Expand-Archive $sysmonZip "$AppDir\tools\sysmon" -Force
     if (!(Test-Path "$DataDir\config\sysmon.xml")) {
-        $rules = Fetch 'https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml' 'swift-sysmon.xml'
+        # Pinned to one reviewed commit and checked against dependency-hashes.json: the
+        # branch can change at any time, and this file decides what Sysmon records.
+        $rules = Fetch 'https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/1836897f12fbd6a0a473665ef6abc34a6b497e31/sysmonconfig-export.xml' 'sysmonconfig-export-1836897f.xml'
         Copy-Item $rules "$DataDir\config\sysmon.xml"
     }
     $sysmonSwitch = if (Get-Service Sysmon64,Sysmon -ErrorAction SilentlyContinue) { '-c' } else { '-i' }
@@ -206,26 +343,56 @@ try {
         $aiNote = ' Local AI triage is unavailable because this CPU lacks AVX2; monitoring runs and alerts are kept for human review.'
         Write-Warning $aiNote.Trim()
     }
-    $rules = Fetch 'https://rules.emergingthreats.net/open/suricata-7.0.3/emerging.rules.tar.gz' 'emerging.rules.tar.gz'
+    # ET Open publishes new rules at this fixed address every day, so they are fetched
+    # again on every run (setup, repair and "Update now"); a cached copy would be
+    # reused forever. The last good copy is kept only for a repair without internet.
+    $rulesCache = "$DataDir\cache\emerging.rules.tar.gz"
+    $rulesFallback = "$DataDir\cache\emerging.rules.previous.tar.gz"
+    if (Test-Path -LiteralPath $rulesCache) { Move-Item -LiteralPath $rulesCache -Destination $rulesFallback -Force }
+    try {
+        $rules = Fetch 'https://rules.emergingthreats.net/open/suricata-7.0.3/emerging.rules.tar.gz' 'emerging.rules.tar.gz'
+        Remove-Item -LiteralPath $rulesFallback -Force -ErrorAction SilentlyContinue
+    } catch {
+        if (!(Test-Path -LiteralPath $rulesFallback)) { throw }
+        Write-Warning "Could not download the latest Emerging Threats rules ($_); using the copy from the previous setup."
+        Move-Item -LiteralPath $rulesFallback -Destination $rulesCache -Force
+        $rules = $rulesCache
+    }
     $vendorYaml = Get-ChildItem $config.SuricataDir -Filter suricata.yaml -Recurse | Select-Object -First 1
     if (!$vendorYaml) { throw 'Suricata vendor YAML missing.' }
     & $python "$AppDir\setup\configure_suricata.py" $vendorYaml.FullName "$DataDir\config\suricata.yaml" $configPath $DataDir $rules
     if ($LASTEXITCODE -ne 0) { throw 'Invalid Suricata configuration.' }
-    Run $suricataExe.FullName "-T -c `"$DataDir\config\suricata.yaml`" -l `"$DataDir\suricata`""
-    Register 'LightHouse-Suricata' $suricataExe.FullName "-c `"$DataDir\config\suricata.yaml`" -i `"$($config.CaptureInterface)`" -l `"$DataDir\suricata`"" @("PATH=$env:PATH;$env:WINDIR\System32\Npcap")
+    Test-Suricata $suricataExe.FullName $python
+    # A "Shut down" from the dashboard leaves this marker for the API's next start.
+    # Setup re-registers every service as automatic and starts them all itself, so an
+    # old marker would only be acted on again later. Removed only here, just before
+    # the services are re-registered: if setup fails earlier, the API still finds it.
+    $shutdownMarker = "$DataDir\config\shutdown.json"
+    if (Test-Path -LiteralPath $shutdownMarker) { Remove-Item -LiteralPath $shutdownMarker -Force }
+    Register 'LightHouse-Suricata' $suricataExe.FullName "-c `"$DataDir\config\suricata.yaml`" -i `"$captureInterface`" -l `"$DataDir\suricata`"" @("PATH=$env:PATH;$env:WINDIR\System32\Npcap")
     Nssm @('set', 'LightHouse-Suricata', 'DependOnService', 'npcap')
     Start-Service LightHouse-Suricata
     $environment = @('PYTHONUNBUFFERED=1', 'LIGHTHOUSE_DESKTOP=0', "LIGHTHOUSE_DB_PATH=$DataDir\lighthouse.db",
         "LIGHTHOUSE_STATIC_DIR=$AppDir\dashboard\dist", "LIGHTHOUSE_SURICATA_PATH=$DataDir\suricata\eve.json",
         'LIGHTHOUSE_SYSMON_CHANNEL=Microsoft-Windows-Sysmon/Operational', 'LIGHTHOUSE_SECURITY_CHANNEL=Security',
         "LIGHTHOUSE_EVENT_STATE_DIR=$DataDir\state", 'LIGHTHOUSE_MODEL_BACKEND=llama_cpp',
-        "LIGHTHOUSE_MODEL_PATH=$modelPath")
+        # One-time admin password in a fixed, admin-only file; the service logs are
+        # rotated and renamed on every restart.
+        "LIGHTHOUSE_FIRST_RUN_DIR=$DataDir",
+        "LIGHTHOUSE_MODEL_PATH=$modelPath",
+        # Chat's instructions, already read, kept across restarts (admin-only data folder).
+        "LIGHTHOUSE_MODEL_STATE_DIR=$DataDir\cache\llm-state")
+    # Optional "ModelThreads" in windows.json overrides the automatic choice.
+    if ($config.ModelThreads -and [int]$config.ModelThreads -gt 0) { $environment += "LIGHTHOUSE_MODEL_THREADS=$([int]$config.ModelThreads)" }
     Register 'LightHouse-API' $python "-m uvicorn triage.api:app --host 127.0.0.1 --port $($config.ApiPort)" $environment
+    Grant-InteractiveStart 'LightHouse-API'
     Start-Service LightHouse-API
     # API seeds first, placing the existing credential banner in API stdout.
     Wait-Http "http://127.0.0.1:$($config.ApiPort)/api/health" | Out-Null
     Register 'LightHouse-Ingestion' $python '-m triage.main tail' $environment
     Nssm @('set', 'LightHouse-Ingestion', 'DependOnService', 'LightHouse-API', 'LightHouse-Suricata', 'EventLog')
+    # Background triage yields the CPU to a chat the owner is waiting on.
+    Nssm @('set', 'LightHouse-Ingestion', 'AppPriority', 'BELOW_NORMAL_PRIORITY_CLASS')
     $ingestionStarted = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     Start-Service LightHouse-Ingestion
     Start-Sleep -Seconds 5
@@ -241,9 +408,19 @@ try {
     }
     if (!$healthy) { throw 'Event ingestion did not report fresh healthy channels. See ingestion stderr.' }
     Write-Host "LightHouse ready: http://127.0.0.1:$($config.ApiPort)"
-    Write-Host "Initial admin credential: $DataDir\logs\LightHouse-API.stdout.log"
+    Write-Host "Initial admin password (first install, until you change it): $DataDir\first-run-password.txt"
     Write-Host "Configuration: $configPath. Review HOME_NET and capture adapter for this network."
     Write-Host "Local AI model: $modelPath"
+    if ($PreviousAppDir) {
+        # The program moved to a new folder. Remove the old copy, but only once this
+        # one is running, and only if it really is a LightHouse program folder.
+        $previous = [IO.Path]::GetFullPath($PreviousAppDir).TrimEnd('\')
+        if ($previous -ne [IO.Path]::GetFullPath($AppDir).TrimEnd('\') -and $previous.Length -gt 3 -and
+            (Test-Path -LiteralPath "$previous\setup\install.ps1") -and (Test-Path -LiteralPath "$previous\runtime\python.exe")) {
+            try { Remove-Item -LiteralPath $previous -Recurse -Force; Write-Host "Removed the previous program folder $previous" }
+            catch { Write-Host "Could not fully remove the previous program folder $previous ($_); delete it by hand." }
+        }
+    }
     Complete "Installation completed.$aiNote" 0
 } catch {
     Write-Host "INSTALLATION FAILED: $_"

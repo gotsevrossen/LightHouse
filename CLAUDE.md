@@ -1,6 +1,10 @@
 # LightHouse — Local AI Security Copilot
 
-LightHouse is a Windows desktop app that gives small-business owners SOC-style security monitoring with no security background required and no cloud. It collects alerts from local sensors, triages each one with an on-device LLM, and shows plain-English explanations and one concrete next step in a desktop dashboard. **No monitoring data or AI inference ever leaves the user's machine.** Treat that as a hard product requirement, not a preference.
+LightHouse is a Windows desktop app that gives small-business owners SOC-style security monitoring with no security background required and no cloud. It collects alerts from local sensors, triages each one with an on-device LLM, and shows plain-English explanations and one concrete next step in a desktop dashboard. **Monitoring data and alert triage never leave the user's machine.** Treat that as a hard product requirement, not a preference.
+
+**One owner-approved, opt-in exception (2026-10-08):** when an admin stores a Purdue GenAI Studio API key (`python -m triage.cloud_key set`), *chat* answers come from GenAI Studio (`triage/cloud_model.py`): the question plus the same fenced alert context as local chat, which (owner-approved 2026-10-10) includes a capped quote of the raw sensor record when the question is about one alert. Triage stays local; GenAI Studio failures fall back to the local model; the dashboard footer says when answers come from GenAI Studio. The key lives only DPAPI-encrypted in the admin-only data folder and goes only to `genai.rcac.purdue.edu`. Without a key, nothing leaves the machine. Don't widen this (no triage, no other providers) without asking.
+
+**Second owner-approved, opt-in exception (2026-10-10): Brave web search for chat.** When an admin stores a Brave Search key (`python -m triage.brave_key set`), a chat question about one alert also gets up to 5 web results (`triage/web_search.py`), so the AI can investigate like a tier-one analyst (what, who, how). Queries go only to `api.search.brave.com` and are built by code alone, two per alert: (1) the alert's kind from public identifiers (Windows event ID, Suricata rule sid and name filtered word by word, MITRE technique IDs), checked against an allowlist that rejects anything shaped like an address; (2) owner-approved 2026-10-11, the outside party: the alert's single public IP (`is_global`; never private/loopback/link-local/CGNAT; neither when both ends are public), else a public domain from structured DNS/TLS/HTTP/Sysmon fields (no internal suffixes or single labels). Never device/user names, paths, command lines, free text from the record or model output. **Owner-approved 2026-10-12: general chats search every question too**, from the owner's own words cleaned word by word by code (`question_query`: drops private/loopback/link-local IPs, e-mails, paths, document file names, internal and Windows-style host names, known device names, LightHouse user names and this computer's name; free text can't be cleaned perfectly and the footer warns the owner). When code matches a general question to one alert (`_named_alert_id` in `api.py`: alert number, an IP/domain from its record, "latest alert", or title words), that alert's two code-built searches run too. Results are cleaned, capped and fenced as untrusted evidence; failures mean no results. The footer says when web search is on. Keep these safeguards; don't add other search or threat-intel providers without asking.
 
 ## Platform: Windows only
 
@@ -11,7 +15,7 @@ LightHouse is now a **Windows-only** product. Build, test and design for Windows
 - **Local AI:** llama.cpp in-process (`llama-cpp-python`, exact pin) running a Phi-4-mini GGUF model
 - **Services:** NSSM runs the API, ingestion and Suricata as Windows services
 - **Packaging:** Inno Setup → `dist/LightHouse-Setup.exe` (`packaging/windows/`)
-- **UI:** the Start-menu shortcut opens the dashboard at `http://127.0.0.1:8000` in the default browser (no native window)
+- **UI:** the Start-menu and desktop shortcuts open the dashboard at `http://127.0.0.1:8000` in its own window (Microsoft Edge app mode, `--app=`), backed by `dashboard/public/manifest.json`; default browser if Edge is absent. No pywebview, no service worker (nothing is cached offline)
 - **Network exposure:** loopback only
 
 Notes:
@@ -29,8 +33,17 @@ triage/                 Python backend (FastAPI + ingestion + triage)
   llm.py                Prompt building, untrusted-evidence fencing, TriageModel ABC, fixture model (Ollama model is legacy)
   local_model.py        llama.cpp runtime (lazy load, retry, AVX2 check, installer CLI)
   service.py            Pipeline: dedupe → model → sensor severity floor → store
-  db.py                 SQLite (WAL): users, sessions, alerts, preferences
+  db.py                 SQLite (WAL): users, sessions, alerts, preferences, activity log
   dedupe.py             Duplicate suppression
+  audit.py              Admin activity log vocabulary (fixed actions; alerts named by id only)
+  guidance.py           Owner guidance tier from final severity + confidence (fixed banners)
+  cloud_key.py          GenAI Studio key, DPAPI-encrypted in the data folder (`python -m triage.cloud_key`)
+  cloud_model.py        GenAI Studio chat model (chat only; falls back to local; triage stays local)
+  brave_key.py          Brave Search key, DPAPI-encrypted beside the GenAI key (`python -m triage.brave_key`)
+  web_search.py         Opt-in Brave web search for chat (alert: rule identifiers + outside public IP/domain; general: the cleaned question)
+  monitoring.py         Pause/resume monitoring and shut down (Windows services)
+  updates.py            GitHub release check + "Update now" (SHA-256-verified, one-time SYSTEM task)
+  reset_password.py     Admin CLI: replace a lost password
   ingest/readers.py     Suricata / Wazuh-shape parsers + tailers (Zeek parts are legacy)
   ingest/windows.py     Windows Event Log reader (Sysmon + Security) → Wazuh-shaped alerts
   ingest/health.py      Ingestion health for analyst views
@@ -41,13 +54,24 @@ dashboard/              React 18 + TypeScript + Vite (no UI library)
   src/main.tsx          Whole app: login, home, alerts, trends, advanced, settings, admin, chat
   src/api.ts            Fetch wrapper, session storage
   src/conversations.ts  Chat history (localStorage only)
+  src/notifications.ts  Desktop alerts: polls /api/notifications while open, fixed wording only
   src/styles.css        Design tokens + layout (signed-off frame)
   src/sidebar.css       Sidebar rules
-packaging/windows/      build.ps1, install.ps1, lighthouse.iss, security.ps1, configure_suricata.py, dependency-hashes.json
+packaging/windows/      Windows installer:
+  lighthouse.iss        Inno Setup script (folder checks, ACL lock, shortcuts, runs install.ps1)
+  install.ps1           Dependency setup + NSSM services (runs elevated after files are copied)
+  security.ps1          ACL, ownership, hash and signature guards shared by setup and tests
+  uninstall.ps1         Stops/removes services (also -StopOnly before an upgrade)
+  open-lighthouse.ps1   Dashboard shortcut: starts LightHouse-API if shut down, opens the window
+  configure_suricata.py, disable_failed_rules.py   Suricata YAML generation; disables rules the engine can't parse
+  dependency-hashes.json  Pinned SHA-256 of installer downloads
+  build.ps1             Builds dist/LightHouse-Setup.exe; dev-update.ps1 pushes a checkout into an install (dev only)
+  make-installer-art.ps1, art/   Installer icon and wizard images
 packaging/              Legacy Linux packaging (build-deb.sh, systemd, monitoring-stack installer), PyInstaller spec
 samples/                Fixture records for Suricata, Zeek, Wazuh
 tests/                  pytest suite (+ windows_security.ps1)
-docs/                   windows-install.md, implementation-log.md, missing-information.md, backend-completion-requirements.md
+docs/                   windows-install.md (current); purdue-chat-plan.md (GenAI Studio chat, shipped v0.3.1);
+                        implementation-log.md, missing-information.md, backend-completion-requirements.md (legacy Linux-appliance era)
 *-ui-frame.html         Static design references for the dashboard frame (lighthouse-ui-frame.html is current)
 ```
 
@@ -80,8 +104,9 @@ python -m triage.local_model smoke-test --model-path <file.gguf>
 - **One process on desktop:** the FastAPI app serves `/api/*` and the built dashboard from the same origin on `127.0.0.1:8000`, and runs ingestion as a background asyncio task. The ingestion task must catch everything below `CancelledError` and log it; a bad sensor record must never take down login.
 - **Loopback only.** Never bind to `0.0.0.0`, add CORS origins, or expose the Vite dev server. LAN access exists only in the appliance deployment, behind TLS.
 - **`LIGHTHOUSE_DEV`** publishes the schema and route table. Workstation only; never set it in packaging.
-- Config is via `LIGHTHOUSE_*` env vars and `C:\ProgramData\LightHouse\config\windows.json`. Add new settings the same way and document them in `docs/windows-install.md`.
-- Windows paths live under `C:\Program Files\LightHouse` (app) and `C:\ProgramData\LightHouse` (DB, config, models, logs, state). Use `triage/paths.py`; never hard-code paths.
+- Config is via `LIGHTHOUSE_*` env vars and `<install folder>\data\config\windows.json`. Add new settings the same way and document them in `docs/windows-install.md`.
+- Windows paths follow the install folder chosen in setup (default `C:\Program Files\LightHouse`, may be on any internal NTFS drive): app in `<install folder>`, data (DB, config, models, logs, state) in `<install folder>\data`, Suricata in `<install folder>\Suricata`. The installer passes every path to the services as `LIGHTHOUSE_*` variables; never hard-code `C:\` or `ProgramData`. `C:\ProgramData\LightHouse` is only the legacy location setup migrates from. Only the Npcap driver, VC++ runtime, Sysmon binary and Windows event logs stay on the system drive.
+- The install folder is locked by setup (SYSTEM/Administrators full, Users read+execute) because every service runs from it as LocalSystem; keep it that way.
 
 ## Security rules (do not weaken)
 
@@ -110,16 +135,18 @@ The frame was signed off. **Match it strictly.** Reuse the existing tokens, comp
 - **Resilience:** parse localStorage defensively (`safeParse`); corrupt storage must never white-screen the app.
 - **Chat** ("Ask LightHouse"): see below.
 
-## Chat ("Ask LightHouse") — planned work
+## Chat ("Ask LightHouse")
 
-Currently a front-end stub (`setTimeout` placeholder in `main.tsx`, history in localStorage via `conversations.ts`). The goal is to **wire it to the same on-device model** used for triage.
+Wired up and shipped. History stays in the browser's localStorage (`conversations.ts`); the backend lives in `api.py` and `llm.py`.
 
-- Answers come from the local llama.cpp runtime only. No cloud API, ever.
-- Add a backend route (e.g. `POST /api/chat`) behind `require(*ALL_ROLES)`. Reuse the loaded model behind the model abstraction instead of loading a second copy.
-- Any alert data included as context is attacker-controlled: fence it with the same `<untrusted_evidence>` handling as `build_prompt`, and cap its length.
-- Respect roles: an owner's chat context must not include `raw`, `rule_id` or `reasoning`.
-- Write answers for a non-technical owner. Handle "model unavailable / no AVX2" with a clear message, not an error screen.
-- Inference is CPU-only and slow; keep the existing typing indicator and don't block the UI.
+- **Routes** (all behind `require(*ALL_ROLES)` unless noted): `POST /api/chat` and `POST /api/chat/stream` (newline-delimited JSON events) answer; `POST /api/chat/warm` pre-reads the prompt while the user types; `POST /api/chat/title` names a chat; `GET /api/chat/provider` says local or GenAI Studio (for the footer); `GET /api/chat/models` and `PUT /api/chat/model` read and set the default model (admin only).
+- **Where answers come from:** the local llama.cpp runtime behind the `TriageModel` interface (the API process reuses one loaded model; the GGUF is memory-mapped and shared with ingestion), or Purdue GenAI Studio only when an admin stored a key (see the exception at the top). No other cloud API answers; Brave Search only supplies fenced web results (second exception at the top). GenAI failures fall back to the local model.
+- **Choosing a model:** admins set the default in Settings → Chat AI (Thinking / Balanced / Quick / Local (slow)); anyone may pick another for one question with the picker beside Send, unless the default is Local (slow), which offers no online models.
+- Any alert data included as context is attacker-controlled: it is fenced with the same `<untrusted_evidence>` handling as `build_prompt` and length-capped. Keep it that way.
+- Respect roles: chat context is built from `AlertDetailOwner` (no `rule_id` or `reasoning`), for every role.
+- **Evidence in chat (owner-approved 2026-10-10):** a question about one alert also carries a quote of that alert's raw sensor record (`raw_excerpt`, `CHAT_EVIDENCE_MAX_CHARS` = 1200, scrubbed, inside the fence), for every role and to GenAI Studio too, so the AI can explain exactly what happened. Owner-approved 2026-10-12: a general question that code matches to one alert carries that one alert's quote too (it leads the context as A1); unmatched general questions carry no raw record. Don't raise the cap or add more raw records without asking.
+- Answers are for a non-technical owner. "Model unavailable / no AVX2" gives a clear message, not an error screen. Fixed "get help" reminders are added by code above the AI's answer.
+- Inference is CPU-only and slow; keep the typing indicator and don't block the UI.
 
 ## Code style
 
@@ -129,9 +156,31 @@ Currently a front-end stub (`setTimeout` placeholder in `main.tsx`, history in l
 - Keep changes small and surgical; don't refactor unrelated code.
 - **Never run `git commit`, `git push` or other history-changing git commands.** Make the file changes and leave committing to me.
 
+## Testing on the owner's device
+
+Releases are tested on my own Windows laptop, not a VM. LightHouse is really installed there (install folder `L:\LightHouse`, capturing on the laptop's Wi-Fi), so that install is live: real alerts, running services, my data.
+
+- Building (`build.ps1`, `npm run build`) and running `python -m pytest` / `npm test` are fine.
+- Read-only diagnostics of the install are fine: service status, the registry, the Windows event logs, files readable without elevation, `GET` requests to `127.0.0.1:8000`.
+- Never run the installer, open the dashboard or any GUI window or browser, or stop, restart or reconfigure the LightHouse services yourself. Hand me the command and I'll run it.
+- `<install folder>\data` is admin-only, so its logs and config can't be read without elevation; ask me to run an elevated read and paste the output.
+
+## Working with subagents
+
+When a prompt has several parts, split them across parallel subagents instead of doing them one after another, to finish sooner.
+
+- **Split by area.** Give each agent one part plus the files or folders it owns, e.g. backend in `triage/`, dashboard in `dashboard/src/`, installer in `packaging/windows/`. Some overlap is fine, such as a shared file one agent only reads or a test file both add to.
+- **One owner per edit.** If two parts need to change the same lines (for example the same function in `main.tsx` or `api.py`), give both to one agent, or do that part yourself after the agents finish. Never have two agents edit the same lines at once.
+- **Keep small or tightly linked work inline.** If one part needs another part's result first, or a part is only a quick edit, do it yourself instead of spawning an agent.
+- **Brief every agent fully.** Agents start without this conversation, so each brief includes:
+  - the relevant rules from this file (security rules, the design frame, Windows-only, no git commits);
+  - the "Testing on the owner's device" rules (no installers, GUI windows, browsers or service restarts; read-only diagnostics only);
+  - what "done" means for its part.
+- **Check the combined result yourself.** After the agents finish, review their changes together, fix any conflicts, then run `python -m pytest`, `npm run build` and `npm test` once on the combined work before reporting.
+
 ## Known gaps
 
 - Clean-machine Windows install, repair and upgrade testing are still outstanding.
 - Free Npcap can't install silently (interactive wizard). Fully unattended setup needs preinstalled Npcap or the OEM installer.
 - `samples/` are format-faithful starters, not real captured events.
-- See `docs/missing-information.md` and `docs/backend-completion-requirements.md` for open decisions.
+- `docs/missing-information.md` and `docs/backend-completion-requirements.md` are legacy Linux-appliance notes, kept for history; current Windows details are in `docs/windows-install.md`.

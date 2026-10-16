@@ -37,6 +37,17 @@ for key in ("classification-file", "reference-config-file", "threshold-file"):
             config[key] = str(candidates[0])
         else:
             config.pop(key)
+# Give Suricata its packet sizes up front. Otherwise it asks Windows for the
+# capture adapter's MTU; when that lookup fails (0x490) Suricata 8.0.7 crashes
+# with heap corruption (0xc0000374) at every start. The usual cause is a
+# lower-case adapter GUID, which install.ps1 now upper-cases; the capture's
+# offload lookup fails, and crashes, the same way, so this alone is not enough.
+# 1514 is a full Ethernet frame (Suricata's own fallback); 65535 is pcap's usual
+# snaplen, so offloaded segments larger than one frame are not truncated.
+config["default-packet-size"] = 1514
+for interface in config.get("pcap") or []:
+    if isinstance(interface, dict):
+        interface["snaplen"] = 65535
 # Relative vendor include paths must not depend on NSSM's working directory.
 config.pop("include", None)
 destination.write_text("%YAML 1.1\n---\n" + yaml.safe_dump(config, sort_keys=False), encoding="utf-8")

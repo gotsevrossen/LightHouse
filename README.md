@@ -1,23 +1,318 @@
 # LightHouse — Local AI Security Copilot
 
-LightHouse turns local Suricata, Zeek, and Wazuh records into validated, plain-English security guidance. Everything — the monitoring data and the AI inference — stays on your own machine. Nothing is sent to a remote service.
+LightHouse gives a small business SOC-style security monitoring without needing a security background. It watches your network and your Windows computer, has an on-device AI read every alert, and shows a plain-English explanation and one concrete next step in a dashboard.
 
-Windows is the primary deployment target. Build the double-clickable `dist/LightHouse-Setup.exe` with `packaging/windows/build.ps1`, and see [Windows installation and validation status](docs/windows-install.md). A Windows install consists of:
+**Your monitoring data stays on your machine.** The monitoring data, the alerts and the AI that triages them all stay on the computer LightHouse is installed on. There is no cloud service and no account to create. Only two things ever go online: the update check (a plain request to GitHub that sends nothing about your computer or alerts), and chat, but only if an admin turns on the optional [Purdue GenAI Studio chat](#optional-faster-smarter-chat-with-purdue-genai-studio).
 
-- **Suricata + Npcap**: network intrusion detection.
-- **Sysmon and Windows Security events**: host monitoring.
-- **LightHouse**, which includes:
-  - the bundled llama.cpp inference runtime, running in-process in the ingestion service;
-  - a local GGUF model (Phi-4-mini, about 2.5 GB, downloaded and verified during setup).
-- **NSSM**: runs the LightHouse API, ingestion and Suricata as Windows services.
-
-Local AI is part of LightHouse: there is no Ollama or other AI application to install, launch or manage, and llama.cpp is an internal implementation detail. Local AI needs an x64 CPU with AVX2. Without AVX2, LightHouse still monitors and keeps alerts for human review. Free Npcap requires its interactive wizard; fully unattended setup needs preinstalled Npcap or its OEM installer. Clean-machine installation, repair and upgrade testing remain outstanding.
-
-The existing Linux desktop application remains supported by the instructions below. It still uses Ollama as its local model runner.
+LightHouse is a Windows application. The older Linux build is no longer maintained; see [Legacy: Linux and appliance deployments](#legacy-linux-and-appliance-deployments).
 
 ---
 
-## Installing (Ubuntu 22.04 LTS or 24.04 LTS)
+## Requirements
+
+| | |
+| --- | --- |
+| **Windows** | Windows 10 22H2 or newer, or Windows 11. x64 only. |
+| **Memory** | **8 GB of RAM.** The AI model needs about 3 GB on its own and Suricata about 1 GB, on top of Windows. With less, the services fail or stall. |
+| **Virtual machines** | Give the VM a fixed **8192 MB** and **turn Dynamic Memory off** (Hyper-V: *Settings → Memory*). With Dynamic Memory, the AI model can fail to load because it needs its memory all at once. |
+| **CPU** | x64 with **AVX2** for the local AI (most Intel CPUs from 2013 on, AMD Zen and later). Without AVX2, LightHouse still monitors and keeps every alert, marked for a person to review. |
+| **Disk** | Several GB free on the drive you install to: the program, its data, the 2.5 GB AI model and Suricata all go there. It must be an **internal NTFS drive** (not USB, network, FAT32 or exFAT). About 100 MB always goes on the Windows drive: the Npcap driver, the Visual C++ runtime, Sysmon and the Windows event logs. |
+| **Internet** | **During setup**, to download Suricata, Sysmon, Npcap, the detection rules, the Visual C++ runtime and the AI model. Monitoring and alert triage don't need the internet afterwards. When online, LightHouse checks GitHub for updates, and each setup or update downloads the latest detection rules. The optional GenAI Studio chat needs it too. |
+| **Rights** | An administrator account to install. |
+
+---
+
+## Installing
+
+1. Download `LightHouse-Setup.exe` from the [Releases](../../releases) page.
+2. *(Recommended)* Check the download matches the SHA256 in the release notes:
+   ```powershell
+   (Get-FileHash .\LightHouse-Setup.exe -Algorithm SHA256).Hash
+   ```
+3. Double-click it and approve the Windows administrator prompt.
+4. **Choose where to install.** The default is `C:\Program Files\LightHouse`. To keep LightHouse off `C:`, pick a new, empty folder on another internal drive, for example `D:\LightHouse`; everything large goes there. If LightHouse was installed before, setup moves its data (alerts, accounts and the AI model) to the new folder and removes the old copies.
+5. **Npcap** (the packet-capture driver) opens its own setup wizard. Tick **WinPcap API-compatible mode** and finish it. This is the only screen you need to answer.
+6. Wait. Setup installs the sensors and downloads the AI model, which can take a while on a slow connection.
+7. On the last page, leave **Open the LightHouse dashboard** ticked and click **Finish**.
+
+LightHouse runs in the background and starts with Windows, so there is nothing to launch. To open the dashboard again, use the **LightHouse Dashboard** shortcut on the desktop or in the Start menu. It opens in its own window, with no address bar or tabs and its own taskbar icon, like an app. To keep it on the taskbar, right-click **LightHouse Dashboard** in the Start menu and choose **Pin to taskbar**. Don't pin the open window itself: that pin skips the shortcut, so it can't start LightHouse again after a shut down. You can also go to `http://127.0.0.1:8000` in any browser (or the port set as `ApiPort` in `windows.json`, if you changed it).
+
+**Shutting down:** admins can choose **Shut down** on the Home page. Monitoring, the local AI and the dashboard stop, and stay off after a restart. Windows' own event logging and Sysmon keep recording, so LightHouse catches up on what happened when it starts again. To start it, open **LightHouse Dashboard** from the Start menu or desktop. No admin rights are needed, and monitoring comes back on if it was running before.
+
+The window is Microsoft Edge in app mode, so you sign in once there; chats are saved per browser. If Edge has been removed, the shortcuts open your default browser instead.
+
+### First sign-in
+
+LightHouse creates an `admin` account with a random one-time password. There is no default password. To read it, open **PowerShell as administrator** and run:
+
+```powershell
+$lh = Join-Path (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object DisplayName -like 'LightHouse*').InstallLocation 'data'
+Get-Content "$lh\first-run-password.txt"
+```
+
+The first line finds LightHouse's data folder wherever you installed it; the commands below reuse `$lh`.
+
+Sign in as `admin` with that password. LightHouse then makes you choose your own (at least 12 characters) before anything else opens, and deletes the file.
+
+First installed with an earlier version? The file won't exist; the password is in the dashboard's logs instead:
+
+```powershell
+Select-String -Path "$lh\logs\LightHouse-API*" -Pattern 'password:'
+```
+
+Don't open the `data` folder in File Explorer and click **Continue** when it asks for permission. That permanently gives your Windows account access to LightHouse's protected data.
+
+For a fully unattended install (no Npcap wizard), see [docs/windows-install.md](docs/windows-install.md).
+
+### What gets installed
+
+| Component | What it does |
+| --- | --- |
+| **Suricata + Npcap** | Watches network traffic for known attacks, using the free Emerging Threats rule set. |
+| **Sysmon + Windows Security auditing** | Watches this computer: programs starting, sign-ins, accounts created, logs cleared. |
+| **LightHouse services** | `LightHouse-API` (the dashboard), `LightHouse-Ingestion` (reads the sensors and runs the AI), `LightHouse-Suricata`. They start automatically with Windows. |
+| **Local AI** | The Phi-4-mini model, run inside LightHouse. There is no separate AI program to install or manage. |
+| **Visual C++ runtime** | Needed by the AI runtime. |
+
+The dashboard listens on `127.0.0.1` only. Other computers on the network cannot reach it, and setup adds no firewall rule.
+
+---
+
+## How LightHouse decides what to tell you
+
+Each alert gets two ratings, and together they decide how cautious LightHouse is.
+
+**Severity** (low, medium, high, critical, or unknown) is how serious the activity could be. The sensor that raised the alert sets a minimum; the AI may raise severity but **can never lower it below what the sensor reported**. That holds even if an attacker plants text in the traffic to talk the AI down.
+
+**Confidence** (high, medium or low) is how sure LightHouse is about its reading. The AI rates itself, then LightHouse's own checks can only lower it, never raise it. Confidence is lowered when:
+
+- the alert comes from a rule LightHouse hasn't been tested against;
+- the sensor recorded very little evidence;
+- the AI rated the alert much more severe than the sensor did;
+- the AI's explanation mentions an address or file that isn't in the alert (a sign it made something up);
+- the AI's first answer was malformed and had to be retried;
+- the AI wasn't available at all.
+
+The dashboard shows both as text, for example **High severity · Low confidence**. They pick one of four messages, written by LightHouse rather than the AI, so nothing inside an alert can remove or soften them:
+
+| Severity ↓ / Confidence → | High | Medium | Low |
+| --- | --- | --- | --- |
+| **Low** | standard | standard | double-check |
+| **Medium** | standard | double-check | second opinion |
+| **High** | double-check | second opinion | **get help now** |
+| **Critical** | second opinion | **get help now** | **get help now** |
+| **Unknown** | second opinion | second opinion | second opinion |
+
+- **Standard:** the AI's explanation and recommended step.
+- **Double-check:** the same, plus one thing to verify before acting.
+- **Second opinion:** LightHouse isn't sure; have someone technical look before you change anything.
+- **Get help now:** contact your IT provider or a security professional. LightHouse lists only safe things to do while you wait (don't delete anything, don't pay anyone who demands money, write down what you saw, disconnect the device if that's safe). Open alerts like this are shown first on Home and Alerts.
+
+Analysts and admins also see why confidence was lowered, and what the AI said it couldn't work out, in the technical evidence view.
+
+### Ask LightHouse (chat)
+
+The chat box at the bottom of Home answers questions using the same on-device AI. Unless an admin turns on GenAI Studio (below), nothing is sent anywhere.
+
+- **Ask about one alert:** open the alert and click **Ask LightHouse about this**. The chat is then linked to that alert, follow-up questions included.
+- **Ask in general:** type in the box, or pick one of the common questions. LightHouse uses your most recent open alerts as context.
+- **Chat names:** each new chat gets a short name, such as "Sysmon activity question", written by the AI once it has answered. Chats are kept only in this browser.
+- **Speed:** the AI runs on your computer's processor, so the first words can take a minute or more while the green wave animation plays. The answer then appears as it's written. You can keep using the dashboard meanwhile.
+- **The AI can't overrule the warnings.** For a "get help now" or "second opinion" alert, LightHouse adds a fixed reminder above the AI's answer, so nothing written into an alert can talk you out of getting help.
+- **Without AVX2, or if the AI isn't working,** the chat says so plainly. Monitoring carries on as normal.
+
+The first question after a restart takes longer, while the AI loads.
+
+### Optional: faster, smarter chat with Purdue GenAI Studio
+
+If you have a Purdue GenAI Studio account, chat can use its much larger models running on Purdue's servers. A short answer takes about 2 seconds, instead of a minute or more on a laptop processor. This is **off unless you turn it on**, and it only applies to chat: alert triage always stays on this computer. When it's on, your question and the plain-English details of the alerts it's about go to Purdue's servers. When you ask about one specific alert, part of its raw sensor record goes too (up to 1,200 characters, which can include device names, IP addresses, usernames, file paths and command lines), so the AI can explain exactly what happened. They run on Purdue's own hardware and aren't used to train models. The chat box's footer says when answers come from GenAI Studio. If Purdue can't be reached, chat falls back to the local AI.
+
+To turn it on, open **PowerShell as administrator** and run:
+
+```powershell
+$app = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object DisplayName -like 'LightHouse*').InstallLocation
+& "$app\runtime\python.exe" -m triage.cloud_key set        # paste your key; it isn't shown
+```
+
+Chat uses the key from the next question; no restart is needed. `cloud_key clear` takes effect the same way.
+
+Then choose the default model on the **Settings** page (admins only), under **Chat AI**. The choices are **Thinking** (GPT-OSS 120B, recommended), **Balanced** (Llama 4), **Quick** (Gemma 4 26B), or **Local (slow)**, which keeps chat on this computer even with a key stored. A change applies from the next question, with no restart needed. While the default is an online model, anyone can pick a different one for a question with the selector beside the chat box's Send button; while it is **Local (slow)**, the chat box offers no online models.
+
+Create the key in GenAI Studio under your avatar → **Settings → Account → API Keys**. LightHouse stores it encrypted with Windows' own data protection, in its admin-only data folder, so a copy taken to another computer is useless. It's only ever sent to `genai.rcac.purdue.edu`, over HTTPS, and is never shown, logged or put in the dashboard. To check whether it's set, use `cloud_key status`. To turn it off, use `cloud_key clear`, then restart the service. If you think the key leaked, delete it in GenAI Studio and create a new one. GenAI Studio is for Purdue students, faculty and staff, and the key is tied to your account, so never put it in an installer or share it.
+
+### Optional: web search in chat with Brave Search
+
+With a Brave Search API key, every chat question also gets a few current web results, so the AI can look things up and investigate alerts like a first-line security analyst: what the activity is doing, who is likely behind it and how it works, double-checked against what it finds. This is **off unless you turn it on**, and it works with either the local AI or GenAI Studio.
+
+What gets searched is decided by LightHouse's code, never by the AI. For a question about an alert (from the alert's **Ask LightHouse about this** button, or a general question LightHouse can tie to one alert, by its number, an address or domain in it, "the latest alert" or words of its title) there are two searches:
+
+- **The kind of alert**, from public identifiers only: a Windows event ID (*Windows Security event ID 4625*), a Suricata rule's number and name, or a MITRE ATT&CK technique ID (*T1046*).
+- **The outside party**: the one public internet address in the alert (for example the server this computer connected to, or the address that tried to log in), or else a public domain name from the alert's DNS, TLS or HTTP details. This tells Brave which outside address your network dealt with. Private, local and internal addresses and names (192.168.x.x, 10.x.x.x, *.local* and similar) are never searched, and when both ends of a connection are public addresses neither is searched, since one of them is your own.
+
+**General chats** also search your question's own words, on every question. LightHouse's code first removes private and local addresses, e-mail addresses, file paths, document names, internal names, Windows-style computer names and the names it knows are yours (device names in your alerts, LightHouse users, this computer). Free text can't be cleaned perfectly, so anything else you type, such as a client's or person's name, can reach Brave: leave private details out of chat questions while web search is on. When a general question points at one alert, that alert's two searches above run too, and the AI also gets a short quote of that alert's sensor record, as it does when you ask from the alert itself.
+
+For alert searches, your device names, usernames, file paths and command lines are never searched. An attacker can influence which outside address gets searched and what pages say about it, so results are treated like any other untrusted data: they can't lower an alert's severity, and the AI is told they're public pages that may be wrong. While it's on, the chat box's footer says so.
+
+Get a key from [Brave Search API](https://brave.com/search/api/) (check its current plans and terms), then in **PowerShell as administrator**:
+
+```powershell
+$app = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object DisplayName -like 'LightHouse*').InstallLocation
+& "$app\runtime\python.exe" -m triage.brave_key set        # paste your key; it isn't shown
+```
+
+It works from the next question, with no restart. The key is stored like the GenAI Studio key (encrypted, admin-only folder) and is only ever sent to `api.search.brave.com`. Use `brave_key status` to check it and `brave_key clear` to turn web search off.
+
+### AI instructions (Admin page)
+
+Admins can tell the AI about the business on the **Admin** page, under **AI instructions**. There are two boxes, each up to 1,000 characters:
+
+- **About this business**, for example "5-person dental office; the front-desk PC holds patient records; our IT provider is Acme IT, 555-0100". Both chat answers and alert triage use it.
+- **How to answer**, for example "use bullet points; end with who to call". Only chat uses it. Alert triage keeps its fixed format.
+
+A change applies from the next question or the next alert, with no restart needed. LightHouse's built-in safety rules always come first and win. The AI is told to ignore anything in these notes that conflicts with them, the notes never lower an alert's severity, and the fixed "get help" reminders still appear. Keep the notes short: the local AI rereads them before every first answer, so long notes make it slower to start. If chat uses Purdue GenAI Studio, both notes are sent with each question. Alert triage never leaves this computer.
+
+### Roles
+
+- **Owner:** plain-English alerts, trends, live monitoring status and personal preferences, including desktop alerts.
+- **Analyst:** everything an owner sees, plus technical evidence and health views.
+- **Admin:** everything an analyst sees, plus user management, the activity log, the AI instructions, the chat model, pausing or shutting down monitoring, and updates.
+
+Roles are enforced by the server. Hiding a tab in the dashboard is presentation, not access control.
+
+**Is it watching?** Home's health card and **Settings → Monitoring sources** show each sensor (network, Sysmon, Windows Security) as **Working**, **Not reporting**, **Paused** or **Not installed**, for every role. This is judged by whether its reader is alive, not by alerts arriving, so a quiet network isn't a fault.
+
+**Desktop alerts:** in **Settings**, choose **Turn on desktop alerts** and pick a **Notification threshold** (medium, high or critical). Alerts at or above it pop up as Windows notifications while the LightHouse window is open, even minimised. They're not shown while it's closed, because the background services can't reach your desktop. The pop-up uses fixed wording and never shows text from the alert itself, since that could be written by an attacker. The setting is per user and per browser.
+
+**Managing users** (Admin page): add a user with an access level (Owner, Analyst or Admin), change someone's level, **Reset password** (they're signed out and must choose a new one at next sign-in), **Sign out** (ends all of their sessions, for example on a lost laptop), or **Remove** them. LightHouse always keeps at least one admin, so it refuses to demote or remove the last one. You can't change or remove your own account; another admin does that. The built-in `admin` account can't be removed (it would come back with a new one-time password), but its level and password can be changed.
+
+**Activity log** (Admin page): who did what, newest first. This covers sign-ins (failed ones too), password changes and resets, user changes, alerts resolved, dismissed or reopened, pausing, resuming or shutting down, AI instruction and chat model changes, GenAI Studio keys set or cleared, and updates started. It's read-only, and alerts are named by number only, never by their (attacker-controllable) titles.
+
+**How long data is kept:** LightHouse doesn't delete anything automatically yet. Alerts, the activity log and other data stay in the database until they're removed.
+
+**Forgot a password?** It can't be shown, only replaced. In **PowerShell as administrator**, run `& "$app\runtime\python.exe" -m triage.reset_password` (`$app` as above). It prints a new password for `admin`, or for the account you name after it, and asks for a new one at the next sign-in.
+
+---
+
+## Running setup again, upgrading and uninstalling
+
+**Pausing monitoring** (e.g. taking the laptop home): on **Home**, an admin can click **Pause monitoring**. This stops network capture (Suricata) and alert triage, unloads the AI, and keeps them off even after a restart. **Resume monitoring** turns them back on. While paused, Home says so for every user. The small dashboard service keeps running so the button can turn monitoring back on. Sysmon keeps writing to the Windows event log; LightHouse reads those entries once resumed. **Running setup again or choosing Update now turns monitoring back on.** Setup starts every service, so pause again afterwards if you still need it off.
+
+**Updates:** each time an admin opens the dashboard, LightHouse checks GitHub for a newer release (at most every 15 minutes). If there is one, choose **Update now**:
+- LightHouse downloads the new installer from that release.
+- It checks the download against the release's SHA-256 checksum file and refuses anything that doesn't match.
+- It installs the update silently in the background. The dashboard closes for a few minutes and reloads by itself. Like running setup again, this also downloads the latest detection rules and turns paused monitoring back on.
+- Your alerts, accounts and settings are kept.
+
+If the release has no checksum file, or the automatic update fails, the pop-up offers **Open release page** instead; download the installer there and run it. The check is a plain request to GitHub's public releases page and sends nothing about your computer or alerts. Offline, it simply finds nothing.
+
+**Running `LightHouse-Setup.exe` again** repairs or upgrades the install in place; it never makes a second copy. Your alerts, accounts, passwords and settings are kept, and the AI model is reused rather than downloaded again. The Emerging Threats detection rules are downloaded fresh each time; without internet, setup reuses the copy from the last run. If setup stopped partway, fix the cause it reports and run it again.
+
+**Uninstalling** (Windows *Settings → Apps*) removes the LightHouse services and program files. It keeps your data in the `data` folder inside the install folder (alerts, accounts and the AI model), and Suricata in the `Suricata` folder next to it. It also leaves Npcap, Suricata, Sysmon and the Visual C++ runtime installed, since other software may use them. Remove those separately if you want them gone.
+
+---
+
+## Troubleshooting
+
+If setup ends with **"LightHouse setup is incomplete"**, the message includes the reason. For the full picture, open **PowerShell as administrator** and paste:
+
+```powershell
+$app = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object DisplayName -like 'LightHouse*').InstallLocation
+$d = Join-Path $app 'data'
+"--- setup result";     Get-Content "$app\setup\last-result.txt"
+"--- install.log";      Get-Content "$d\logs\install.log" -Tail 30
+"--- services";         Get-Service LightHouse-* | Format-Table Name, Status -AutoSize
+"--- suricata.log";     Get-Content "$d\suricata\suricata.log" -Tail 12
+"--- ingestion errors"; Get-Content "$d\logs\LightHouse-Ingestion.stderr.log" -Tail 25 -ErrorAction SilentlyContinue
+"--- crashes";          Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='Application Error'; StartTime=(Get-Date).AddMinutes(-30)} -MaxEvents 3 -ErrorAction SilentlyContinue | Format-List TimeCreated, Message
+"--- memory";           "{0:N1} GB RAM" -f ((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+```
+
+"Access is denied" means the window isn't running as administrator. LightHouse's data folder is restricted to administrators on purpose.
+
+| Symptom | Likely cause and fix |
+| --- | --- |
+| `The remote name could not be resolved: '...'` | No internet or DNS during setup. Check with `Test-NetConnection aka.ms -Port 443`. On a VM, give it a network switch with internet access (Hyper-V: *Default Switch*), wait a minute after it boots, then rerun setup. |
+| `LightHouse-Ingestion is not running` | Check `ingestion errors` above. If memory shows under 8 GB, or it changes between runs (Dynamic Memory), fix the memory first. |
+| `must be installed on an internal drive`, `cannot protect LightHouse's files`, `already contains other files` | The chosen folder isn't safe for a program that runs as SYSTEM. Pick a new or empty folder on an internal NTFS drive. |
+| `Untrusted owner` / `Untrusted write permission` while moving data | The old `ProgramData\LightHouse` folder has permissions LightHouse didn't set, so setup won't reuse it. Rename that folder (for example to `LightHouse.old`) and run setup again; it then starts fresh. |
+| `Not enough free space on ...` | Moving the old data (mostly the 2.5 GB model) needs that much room on the new drive. Free some space, or pick another drive. |
+| `Free Npcap cannot install silently` | A silent install was attempted without Npcap. Install Npcap first, or run setup normally to get its wizard. |
+| `Cannot read required Event Log channels` | Setup must run as administrator, and Sysmon must be installed (setup does this). |
+| `Visual C++ runtime ... restart Windows` | Restart Windows, then rerun setup. |
+| `The local AI model failed its self-test` | Usually not enough memory, or a damaged model download. Fix the memory, then rerun setup (a damaged download is fetched again). |
+
+Some Emerging Threats rules use features the Windows build of Suricata lacks. Setup switches off exactly those rules, lists them in `data\rules\disabled-by-lighthouse.txt` inside the install folder, and keeps the rest. A handful there is normal.
+
+More detail, including every file location and setting, is in [docs/windows-install.md](docs/windows-install.md).
+
+---
+
+## Building from source
+
+On Windows, in PowerShell, with Python 3.11+, [uv](https://docs.astral.sh/uv/) and Node.js:
+
+```powershell
+uv sync                                  # backend dependencies (or: pip install -e '.[dev]')
+python -m pytest                         # backend tests
+python -m triage.main replay --mock      # fill a demo database from samples/ without a model
+
+cd dashboard; npm ci; npm run build      # dashboard -> dashboard/dist
+
+# The installer (needs an AVX2 CPU and the Visual C++ runtime on the build machine)
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build.ps1   # -> dist/LightHouse-Setup.exe
+```
+
+To try code changes on a computer that already has LightHouse installed, without rerunning the installer, run this from the repository in **PowerShell as administrator**:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\dev-update.ps1
+```
+
+It rebuilds the dashboard, copies LightHouse's own code into the installed copy and restarts the services, in seconds. It doesn't touch Python dependencies, Suricata, Sysmon, the AI model or settings. After changing `pyproject.toml`, `uv.lock` or `install.ps1`, run the full installer instead. It's for development only and never part of a release.
+
+**Publishing a release** (so the dashboard's update prompt finds it):
+1. Bump `version` in `pyproject.toml`, `AppVersion` in `packaging/windows/lighthouse.iss` and `version` in `dashboard/package.json` (and the two top-level `version` fields in `dashboard/package-lock.json`) to the new `X.Y.Z`. `tests/test_windows_installer.py` checks that they match.
+2. Build the installer. The build writes `dist\LightHouse-Setup.exe` and its checksum file `dist\LightHouse-Setup.exe.sha256`.
+3. Publish a GitHub release tagged `vX.Y.Z` with **both files** attached.
+
+Installs older than the tag will then offer the update. Without the `.sha256` file, the dashboard can only link to the release page.
+
+Anyone who can publish releases on this GitHub repository can install code on every LightHouse computer, so protect the account with two-factor sign-in.
+
+For dashboard work with hot reload:
+
+```powershell
+$env:LIGHTHOUSE_DEV=1; uvicorn triage.api:app --reload --host 127.0.0.1 --port 8000
+cd dashboard; npm run dev                # http://localhost:5173, proxies /api
+```
+
+`LIGHTHOUSE_DEV` publishes the API schema and route table, so only use it on a development machine; it is never set by the installer. Both servers stay on loopback.
+
+Use `npm ci`, not `npm install`: it installs exactly the reviewed `dashboard/package-lock.json` tree. That lockfile and `uv.lock` are committed on purpose. Review changes to them as you would review code.
+
+### Architecture
+
+- **LightHouse-API:** FastAPI on `127.0.0.1:8000`, serving `/api/*` and the built dashboard from the same origin.
+- **LightHouse-Ingestion:** tails Suricata's `eve.json` and the Sysmon and Security event logs, deduplicates alerts, runs the local AI, applies the severity floor and confidence checks, and stores the result in SQLite.
+- **LightHouse-Suricata:** packet capture on the network adapter chosen at install.
+
+Sensor data is treated as attacker-controlled. Only a short, length-capped extract of each alert reaches the AI, fenced off as untrusted evidence, and the AI's answer is validated before it is stored. Settings live in `data\config\windows.json` inside the install folder; see [docs/windows-install.md](docs/windows-install.md).
+
+### Known gaps
+
+- Clean-machine install, repair and upgrade testing is still in progress.
+- The free Npcap edition can't install silently, so a fully unattended install needs Npcap preinstalled or its OEM installer.
+- `samples/` are format-faithful starters, not captured real-world events.
+
+Current Windows details are in [docs/windows-install.md](docs/windows-install.md). `docs/implementation-log.md`, `docs/missing-information.md` and `docs/backend-completion-requirements.md` are from the Linux-appliance era and kept for history only; they don't describe the current product.
+
+---
+
+## Legacy: Linux and appliance deployments
+
+> **No longer maintained.** LightHouse is now Windows-only. The Linux `.deb` build, its Ollama model runner and the hardware appliance deployment below are kept for reference only. They are not updated or tested, and do not include the confidence and guidance features above.
+
+### Installing (Ubuntu 22.04 LTS or 24.04 LTS)
 
 Download `lighthouse_0.1.0_amd64.deb`, then either double-click it in Files, or run:
 
@@ -31,7 +326,7 @@ Then open **LightHouse** from your applications menu. On the very first launch i
 
 That is the whole install. There is no terminal step, no config file to edit, and no password to go hunting for in a log.
 
-### What gets installed
+#### What gets installed
 
 | Component | Purpose |
 | --- | --- |
@@ -41,7 +336,7 @@ That is the whole install. There is no terminal step, no config file to edit, an
 | Ollama | Runs the AI model locally. Model size is chosen from your hardware (GPU, RAM) |
 | `lighthouse.service` | The background monitoring service, started at boot |
 
-### Monitoring runs whether the window is open or not
+#### Monitoring runs whether the window is open or not
 
 The window is a **viewer**, not the product. Closing it does not stop protection — `lighthouse.service` keeps reading your sensors and triaging alerts from boot onwards, and the window simply shows you what it found.
 
@@ -52,7 +347,7 @@ journalctl -u lighthouse -f     # what is it doing?
 
 **Known limitation.** Unlike a dedicated always-on appliance, this runs on a computer you also use for other things. When it is asleep, shut down, or off the network, it is not monitoring. The "continuous" in continuous monitoring is bounded by how often the machine is actually on. If you need genuinely uninterrupted coverage, see the appliance deployment at the end of this document.
 
-### Uninstalling
+#### Uninstalling
 
 ```
 sudo apt remove lighthouse    # removes the app, keeps your alert history
@@ -61,9 +356,7 @@ sudo apt purge  lighthouse    # removes the alert history and credentials too
 
 Neither removes Suricata, Zeek, Wazuh, or Ollama — they are ordinary packages and may be in use by something else. Remove them explicitly if you want them gone.
 
----
-
-## Building the package
+#### Building the package
 
 On **Ubuntu 22.04**, not 24.04: the bundled binary links against the build machine's glibc, and a 22.04 build runs on 24.04 while the reverse does not.
 
@@ -77,7 +370,7 @@ This builds the dashboard with `npm ci`, bundles the backend with PyInstaller, a
 
 `npm ci` and not `npm install`: it installs exactly the reviewed `dashboard/package-lock.json` tree and nothing newer. That lockfile is committed, and it matters here more than it does in most projects — npm runs dependency install scripts as the building user, and this build output is embedded in a package that installs with root privileges on somebody else's computer. Review lockfile changes as you would review code.
 
-### Running from source
+#### Running from source
 
 You do not need to build a package to work on it:
 
@@ -100,9 +393,7 @@ Vite serves the dashboard on `http://localhost:5173` and proxies `/api` to `127.
 
 Run the tests with `python -m pytest`.
 
----
-
-## Architecture
+#### Architecture
 
 The desktop build is a single process doing two jobs:
 
@@ -115,7 +406,7 @@ The appliance deployment keeps the original two-process split — see below.
 
 **Loopback only.** The API is never exposed on the LAN, there is no TLS termination, and there is no reverse proxy. There is nothing to expose: it listens on `127.0.0.1` and the window connects to it locally. LAN access is what the appliance deployment is for.
 
-### Configuration
+#### Configuration
 
 Set in `/etc/lighthouse/lighthouse.env` by the installer. You will not normally edit these.
 
@@ -134,15 +425,7 @@ Set in `/etc/lighthouse/lighthouse.env` by the installer. You will not normally 
 | `LIGHTHOUSE_CORS_ORIGINS` | empty | Extra browser origins. Leave empty: same-origin needs none. |
 | `LIGHTHOUSE_DEV` | unset | Development conveniences. Never set outside a workstation. |
 
-### Roles
-
-- **Owner**: plain-language alerts, trends, and personal preferences.
-- **Analyst**: Owner access plus technical evidence and health views.
-- **Admin**: Analyst access plus user management and settings.
-
-Role filtering happens on the server. The dashboard hiding a tab is presentation, not access control.
-
-### First sign-in, in detail
+#### First sign-in, in detail
 
 On first start LightHouse generates a random administrator password and does two things with it: prints it once to stdout (which lands in the systemd journal), and — in desktop mode only — writes it to a one-time file that the window reads, displays, and deletes. It is stored only as a bcrypt hash.
 
@@ -154,22 +437,20 @@ If the window never showed you a password, it is still in the journal:
 sudo journalctl -u lighthouse --no-pager | grep -A3 "administrator account"
 ```
 
----
-
-## Alternative: hardware appliance deployment
+### Alternative: hardware appliance deployment
 
 **This is not the default deployment, and most readers should stop here.** It describes running LightHouse as a dedicated always-on box on a customer network, reachable from other machines over the LAN — the original deployment model, kept because it is real working knowledge and because it solves the always-on limitation the desktop app has.
 
 It is a fundamentally different security posture: the desktop app is loopback-only and has no network attack surface, while this one is exposed on the LAN and therefore *requires* TLS in front of it. Do not mix the two sets of instructions.
 
-### What you need on the appliance
+#### What you need on the appliance
 
 - A Linux machine or VM (Ubuntu 24.04 LTS is a practical default) with Python 3.11+.
 - Ollama on `http://localhost:11434` with `qwen3:8b` pulled.
 - nginx or Caddy on the appliance to terminate TLS. LightHouse itself speaks plain HTTP on loopback only.
 - Node 20+ **on the machine that builds the dashboard**. The appliance needs no Node at runtime — it serves static files.
 
-### 1. Install the backend
+#### 1. Install the backend
 
 ```
 python -m venv .venv && . .venv/bin/activate
@@ -178,7 +459,7 @@ pip install -e .
 
 Use `pip install -e '.[dev]'` to also run the test suite.
 
-### 2. Build the dashboard
+#### 2. Build the dashboard
 
 ```
 cd dashboard
@@ -188,7 +469,7 @@ npm run build
 
 `npm run build` writes to `dashboard/dist`. Nothing from `dashboard/` other than `dist/` needs to reach the appliance: build on a workstation, copy the directory across (`rsync -a dashboard/dist/ appliance:/opt/lighthouse/dashboard/dist/`), and point `LIGHTHOUSE_STATIC_DIR` at it. Build output is deliberately not committed.
 
-### 3. Seed the demo database (optional)
+#### 3. Seed the demo database (optional)
 
 ```
 python -m triage.main replay --mock
@@ -196,7 +477,7 @@ python -m triage.main replay --mock
 
 Fills the database from `samples/` without calling a model. Skip on a real deployment.
 
-### 4. Run the API on loopback
+#### 4. Run the API on loopback
 
 ```
 uvicorn triage.api:app --host 127.0.0.1 --port 8000
@@ -206,7 +487,7 @@ No `--reload`: it is a development file-watcher, it doubles the process count, a
 
 `LIGHTHOUSE_DESKTOP` is left unset here, so the API does **not** start ingestion — that stays a separate process on the appliance (step 7).
 
-### 5. Terminate TLS in front of it
+#### 5. Terminate TLS in front of it
 
 Publish only 443 on the LAN and proxy to `127.0.0.1:8000`. Session tokens are bearer tokens valid for eight hours; without TLS both the login POST and every later request carry them across the customer network in cleartext.
 
@@ -231,7 +512,7 @@ Caddy needs one line: `lighthouse.lan { reverse_proxy 127.0.0.1:8000 }`.
 
 Never expose uvicorn directly, and never run the Vite dev server on the customer network — `--host 0.0.0.0` on a dev server publishes unminified sources, source maps, and an unauthenticated module endpoint.
 
-### 6. Run it under systemd
+#### 6. Run it under systemd
 
 `/etc/systemd/system/lighthouse.service`:
 
@@ -260,7 +541,7 @@ WantedBy=multi-user.target
 
 Keep the database directory readable only by the service account: it holds password hashes, live session tokens, and raw alert payloads.
 
-### 7. Live ingestion, as a second unit
+#### 7. Live ingestion, as a second unit
 
 Set `LIGHTHOUSE_SURICATA_PATH`, `LIGHTHOUSE_ZEEK_PATH`, and `LIGHTHOUSE_WAZUH_PATH` to the JSON-line log paths, then run:
 
@@ -270,14 +551,10 @@ python -m triage.main tail
 
 Zeek must be configured to emit JSON (`LogAscii::use_json=T`). The service account needs read access to each file *and its directory*, so log rotation does not silently stop ingestion.
 
-### First sign-in on the appliance
+#### First sign-in on the appliance
 
 The generated admin password reaches the journal, not a window:
 
 ```
 sudo journalctl -u lighthouse --no-pager | grep -i password
 ```
-
----
-
-See `docs/implementation-log.md`, `docs/missing-information.md`, and `docs/backend-completion-requirements.md` for implementation status, deployment inputs, and the backend handoff checklist.

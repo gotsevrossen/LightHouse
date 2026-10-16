@@ -266,3 +266,68 @@ def test_real_gguf_model_produces_validated_triage():
     settings = LlamaCppSettings(model_path=Path(os.environ["LIGHTHOUSE_TEST_GGUF"]))
     result = local_model.smoke_test(settings)
     assert result["ok"] and result["severity"] in {"low", "medium", "high", "critical"}
+
+
+# --- CPU threads ----------------------------------------------------------------
+
+from triage.local_model import choose_inference_cores, plan_threads
+
+
+def test_core_choice_skips_a_low_power_island_on_hybrid_laptops():
+    # Intel Core Ultra 7 255U as Windows reports it: 2 hyperthreaded P-cores (class 1)
+    # and 8 E-cores share cache 0; 2 low-power E-cores sit alone on cache 12.
+    cpus = [(100 + i, i // 2, 0, 1) for i in range(4)]                  # P-cores, 2 threads each
+    cpus += [(200 + i, 2 + i, 0, 0) for i in range(8)]                 # E-cores
+    cpus += [(300 + i, 10 + i, 12, 0) for i in range(2)]               # low-power island
+    ids, threads = choose_inference_cores(cpus)
+    assert threads == 10 and not any(300 <= cpu < 400 for cpu in ids) and len(ids) == 12
+
+
+def test_core_choice_keeps_every_core_elsewhere():
+    desktop = [(i, i // 2, 0, 0) for i in range(16)]                    # 8 cores, one class
+    assert choose_inference_cores(desktop) == ([cpu[0] for cpu in desktop], 8)
+    alder = [(i, i, 0, 1) for i in range(8)] + [(8 + i, 8 + i, 0, 0) for i in range(8)]   # P+E, one cache
+    assert choose_inference_cores(alder)[1] == 16
+    # AMD with two core types on separate caches: both are big enough to keep.
+    strix = [(i, i, 0, 1) for i in range(4)] + [(4 + i, 4 + i, 1, 0) for i in range(8)]
+    assert choose_inference_cores(strix)[1] == 12
+    assert choose_inference_cores([]) == ([], 0)
+
+
+def test_thread_setting(monkeypatch):
+    monkeypatch.setenv("LIGHTHOUSE_MODEL_THREADS", "6")
+    assert LlamaCppSettings.from_env().threads == 6
+    assert plan_threads(LlamaCppSettings.from_env()) == 6
+    monkeypatch.setenv("LIGHTHOUSE_MODEL_THREADS", "0")
+    assert LlamaCppSettings.from_env().threads is None
+    monkeypatch.setenv("LIGHTHOUSE_MODEL_THREADS", "lots")
+    with pytest.raises(ValueError, match="LIGHTHOUSE_MODEL_THREADS"):
+        LlamaCppSettings.from_env()
+
+
+# --- speed: flash attention and preloading ---------------------------------------
+
+def test_flash_attention_is_used_and_falls_back(monkeypatch, tmp_path):
+    import types
+    calls = []
+    class Llama:
+        def __init__(self, model_path, flash_attn=False, **options):
+            calls.append(flash_attn)
+            if flash_attn and reject:
+                raise ValueError("flash attention not supported")
+    monkeypatch.setattr(local_model, "cpu_supported", lambda: True)
+    monkeypatch.setitem(sys.modules, "llama_cpp", types.SimpleNamespace(Llama=Llama))
+    settings = LlamaCppSettings(model_path=gguf(tmp_path / "m.gguf"), threads=4)
+    reject = False
+    load_llama(settings)
+    assert calls == [True]
+    reject, calls[:] = True, []
+    load_llama(settings)
+    assert calls == [True, False], "a build without flash attention must still load"
+
+
+def test_preload_loads_the_model_once(tmp_path):
+    model, loads = model_with(FakeLlama(json.dumps(VALID)), tmp_path)
+    assert asyncio.run(model.preload()) is True
+    assert asyncio.run(model.preload()) is True
+    assert len(loads) == 1
