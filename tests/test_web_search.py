@@ -208,10 +208,62 @@ def test_web_results_sit_inside_the_fence_and_cannot_close_it():
     assert start < context.index("https://example.org/x") < end
 
 
-def test_general_questions_carry_no_web_results():
+def test_general_questions_carry_their_web_results_inside_the_fence():
     from triage.schema import AlertDetailOwner
     context = llm.build_chat_context([AlertDetailOwner.from_detail(alert())], False, web=[GOOD | {"snippet": "MARK"}])
-    assert "MARK" not in context
+    start, end = context.index(llm.EVIDENCE_OPEN), context.index(llm.EVIDENCE_CLOSE)
+    assert start < context.index("MARK") < end
+    # With no open alerts at all, the results still arrive, fenced.
+    context = llm.build_chat_context([], False, web=[GOOD | {"snippet": "MARK"}])
+    assert context.count(llm.EVIDENCE_OPEN) == 1
+    start, end = context.index(llm.EVIDENCE_OPEN), context.index(llm.EVIDENCE_CLOSE)
+    assert start < context.index("MARK") < end
+    assert llm.build_chat_context([], False) == "There are no open alerts right now."
+
+
+# --- general chat questions (owner-approved, 2026-10-12) ------------------------
+
+def test_question_query_keeps_the_question_and_drops_this_network():
+    question = ("Is 192.168.1.25 or OFFICE-PC-7 talking to evil-site.com and 8.8.8.8? Mail alice@corp.com, "
+                "file C:\\Users\\alice\\payroll.xlsx on DESKTOP-4F2K9QZ, printer.local, fe80::1, "
+                "office-pc-7.corp.com https://bad.example.net/path?q=1 /home/alice budget.pdf mimikatz.exe")
+    query = web_search.question_query(question, ["OFFICE-PC-7", "alice"])
+    assert query is not None
+    for kept in ("evil-site.com", "8.8.8.8", "bad.example.net", "mimikatz.exe", "talking"):
+        assert kept in query, kept
+    lowered = query.lower()
+    for dropped in ("192.168", "office-pc-7", "alice", "corp.com", "payroll", "desktop-", "printer.local", "fe80",
+                    "path", "budget", "/", "\\", "@"):
+        assert dropped not in lowered, dropped
+    assert len(query) <= web_search.QUERY_MAX_CHARS
+
+
+def test_chit_chat_is_not_searched():
+    for question in ("Thanks!", "ok", "thank you", "  ", "192.168.1.1", "C:\\Users\\alice"):
+        assert web_search.question_query(question) is None, question
+    assert web_search.question_query("what is mimikatz?") == "what is mimikatz"
+
+
+def test_question_results_take_turns_and_say_what_they_are_about(monkeypatch):
+    monkeypatch.setattr(brave_key, "load", lambda: "KEY")
+    def fake_search(query, key, transport=None, count=web_search.RESULT_COUNT):
+        name = "q" if query.startswith("what") else "kind" if query.startswith("Suricata") else "who"
+        return [{"title": f"{name}{i}", "url": f"https://example.org/{name}{i}", "snippet": ""} for i in range(count)]
+    monkeypatch.setattr(web_search, "search", fake_search)
+    public = alert()
+    public.destination_ip = "8.8.8.8"
+    results = web_search.results_for_question("what is this scan", public)
+    assert [item["title"] for item in results[:3]] == ["q0", "kind0", "who0"]
+    assert {item["about"] for item in results} == {"your question", "this kind of alert", "8.8.8.8"}
+    assert len({item["url"] for item in results}) == len(results)
+    only_question = web_search.results_for_question("what is mimikatz", None)
+    assert [item["about"] for item in only_question] == ["your question"] * web_search.QUESTION_RESULT_COUNT
+
+
+def test_no_key_means_no_question_search(monkeypatch):
+    monkeypatch.setattr(web_search, "search", lambda *a, **k: pytest.fail("searched without a key"))
+    monkeypatch.setattr(brave_key, "load", lambda: None)
+    assert web_search.results_for_question("what is mimikatz", alert()) == []
 
 
 def test_a_long_context_takes_its_room_from_history():

@@ -15,8 +15,18 @@ What may leave this computer are two search queries, and code alone writes them:
    other non-global address; when both ends are public, neither (one of them is
    this network's own); never an internal-looking name (.local, .lan, single
    labels).
-Never a device or user name, file path or command line; never the owner's question;
-never anything the AI wrote. A query that fails its allowlist is not sent at all.
+Never a device or user name, file path or command line; never anything the AI
+wrote. A query that fails its allowlist is not sent at all.
+
+General chats (owner-approved, 2026-10-12) also search every question, from the
+owner's own words (question_query), so the AI can look up what the owner asks about.
+Code cleans them first: private, loopback and link-local addresses, e-mail
+addresses, file paths, document file names, internal names, Windows-style host
+names and names LightHouse knows are this network's (devices, LightHouse users,
+this computer) are dropped word by word. Free text cannot be cleaned perfectly:
+anything else the owner types, such as a client's name, can reach Brave, and the
+dashboard footer says so. If the question points at one alert, that alert's two
+code-built searches run too (results_for_question).
 
 The outside indicator is attacker-chosen (an attacker can pick what gets searched)
 and the results are attacker-reachable text (anyone can publish a page that ranks
@@ -33,6 +43,7 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -47,6 +58,9 @@ BRAVE_HOST = "api.search.brave.com"
 SEARCH_TIMEOUT = httpx.Timeout(6.0, connect=4.0)
 RESULT_COUNT = 3
 INDICATOR_RESULT_COUNT = 2
+QUESTION_RESULT_COUNT = 3
+QUESTION_MAX_WORDS = 16
+QUESTION_MAX_CHARS = 400
 # Brave's entry plans allow about one request a second; the two searches of a
 # question are spaced so the second is not refused (which would pause search).
 MIN_REQUEST_GAP_SECONDS = 1.1
@@ -72,6 +86,17 @@ _DOMAIN = re.compile(r"(?=.{4,100}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){1
 # describe this network, not the outside party.
 _INTERNAL_SUFFIXES = (".local", ".lan", ".home", ".internal", ".intranet", ".corp", ".private",
                       ".localdomain", ".home.arpa", ".arpa", ".test", ".example", ".invalid", ".localhost")
+# A question's word is kept only if it looks like this: letters and digits with a
+# little inner punctuation, so no paths, e-mail addresses, ports or markup.
+_QUESTION_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9.&'+-]{0,62}")
+# Default Windows computer names (DESKTOP-4F2K9QZ, WIN-…, LAPTOP-…).
+_HOST_LIKE = re.compile(r"(?:desktop|laptop|win|pc|srv|server|dc|nas|ws)-[a-z0-9-]+")
+# The owner's own files: their names describe the business, not the threat. Program
+# and script names (.exe, .ps1) stay, since those are what gets looked up.
+_DOCUMENT_SUFFIXES = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx", ".txt", ".csv", ".rtf",
+                      ".odt", ".ods", ".jpg", ".jpeg", ".png", ".heic", ".zip", ".pst", ".ost", ".msg", ".eml", ".qbw")
+_CHIT_CHAT = frozenset({"hi", "hello", "hey", "thanks", "thank", "you", "thx", "ok", "okay", "yes", "no", "cool",
+                        "great", "nice", "sure", "got", "it", "bye", "good", "please"})
 
 _lock = threading.Lock()
 _cache: dict[str, tuple[float, list[dict[str, str]]]] = {}
@@ -157,6 +182,60 @@ def _dig(node: Any, path: tuple) -> Any:
 def indicator_query(indicator: str) -> str:
     """Quoted, so Brave matches the address itself rather than similar numbers."""
     return f'"{indicator}" abuse OR malware OR threat'
+
+
+def question_query(question: str, private_names: Iterable[str] = ()) -> str | None:
+    """The web query for a general chat question: the owner's own words, minus
+    anything that names or addresses this network. None when nothing worth
+    searching is left (a greeting, a thank-you), and then nothing is sent.
+
+    `private_names` are names LightHouse knows belong here (device names, LightHouse
+    user names, this computer's name); a word matching one is dropped, as is the
+    first label of a dotted name (office-pc-7.example.com)."""
+    blocked = {name.strip().lower() for name in private_names if isinstance(name, str) and name.strip()}
+    words: list[str] = []
+    for token in question[:QUESTION_MAX_CHARS].split():
+        word = token.strip("\"'`()[]{}<>,;:!?*").rstrip(".")
+        if "://" in word:
+            # A pasted link: only its host may go, and only if it is a public name.
+            word = (urlsplit(word).hostname or "").rstrip(".")
+        lower = word.lower()
+        if (not word or lower in blocked or lower.split(".")[0] in blocked or "@" in word or "\\" in word
+                or "/" in word or _HOST_LIKE.fullmatch(lower) or lower.endswith(_DOCUMENT_SUFFIXES)):
+            continue
+        try:
+            address = ipaddress.ip_address(word)
+        except ValueError:
+            address = None
+        if address is not None:
+            # An outside address the owner asks about may go; this network's never.
+            if address.is_global and not address.is_multicast:
+                words.append(str(address))
+            continue
+        if _DOMAIN.fullmatch(lower) and lower.endswith(_INTERNAL_SUFFIXES):
+            continue
+        if not _QUESTION_WORD.fullmatch(word):
+            continue
+        words.append(word)
+        if len(words) == QUESTION_MAX_WORDS:
+            break
+    if not words or all(word.lower() in _CHIT_CHAT for word in words):
+        return None
+    query = ""
+    for word in words:
+        if len(query) + len(word) + 1 > QUERY_MAX_CHARS:
+            break
+        query = f"{query} {word}".strip()
+    if not _QUERY_ALLOWED.fullmatch(query):
+        return None
+    # Last line of defence: every address left must be a public one.
+    for match in _IPV4.findall(query):
+        try:
+            if not ipaddress.ip_address(match).is_global:
+                return None
+        except ValueError:
+            return None
+    return query
 
 
 def search(query: str, key: str, transport: httpx.BaseTransport | None = None,
@@ -248,6 +327,37 @@ def results_for(alert: AlertDetail) -> list[dict[str, str]]:
                                                                     count=INDICATOR_RESULT_COUNT)
                     if item["url"] not in seen]
     return results
+
+
+def results_for_question(question: str, alert: AlertDetail | None,
+                         private_names: Iterable[str] = ()) -> list[dict[str, str]]:
+    """Web results for a general chat question: its cleaned words (tagged "your
+    question"), plus results_for the alert the question points at, if any. Taken in
+    turn from each search, so a capped prompt keeps some of every kind. [] when web
+    search is off or nothing could be searched."""
+    query = question_query(question, private_names)
+    if query is None and alert is None:
+        return []
+    from .brave_key import load
+    key = load()
+    if not key:
+        return []
+    groups: list[list[dict[str, str]]] = []
+    if query is not None:
+        groups.append([item | {"about": "your question"}
+                       for item in search(query, key, count=QUESTION_RESULT_COUNT)])
+    if alert is not None:
+        found = results_for(alert)
+        for about in dict.fromkeys(item["about"] for item in found):
+            groups.append([item for item in found if item["about"] == about])
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for rank in range(max((len(group) for group in groups), default=0)):
+        for group in groups:
+            if rank < len(group) and group[rank]["url"] not in seen:
+                seen.add(group[rank]["url"])
+                merged.append(group[rank])
+    return merged
 
 
 def enabled() -> bool:

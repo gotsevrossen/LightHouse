@@ -339,6 +339,22 @@ class Database:
                                (str(AlertStatus.OPEN), limit)).fetchall()
         return [int(row["id"]) for row in rows]
 
+    def latest_alert_mentioning(self, indicator: str) -> int | None:
+        """Newest alert whose addresses, title or record contain `indicator` (an IP
+        address or domain from a chat question), so chat can tell which alert is meant."""
+        pattern = "%" + indicator.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        with self.connect() as con:
+            row = con.execute("SELECT id FROM alerts WHERE source_ip=? OR destination_ip=? OR title LIKE ? ESCAPE '\\' "
+                              "OR raw LIKE ? ESCAPE '\\' ORDER BY timestamp DESC, id DESC LIMIT 1",
+                              (indicator, indicator, pattern, pattern)).fetchone()
+        return int(row["id"]) if row else None
+
+    def device_names(self, limit: int = 500) -> list[str]:
+        """Device names seen in alerts: words a web search must never carry."""
+        with self.connect() as con:
+            return [row["device"] for row in con.execute(
+                "SELECT DISTINCT device FROM alerts WHERE device IS NOT NULL AND device != '' LIMIT ?", (limit,))]
+
     def get_alert(self, alert_id: int) -> AlertDetail | None:
         with self.connect() as con:
             row = con.execute("SELECT a.*,t.severity,t.explanation,t.recommended_action,t.reasoning,t.confidence,t.model_confidence,t.confidence_reasons,t.guidance_tier,t.uncertainty FROM alerts a LEFT JOIN triage_results t ON t.alert_id=a.id WHERE a.id=?", (alert_id,)).fetchone()

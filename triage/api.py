@@ -2,18 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import json
 import logging
 import os
 import platform
+import re
 import sys
 import shutil
 import sqlite3
 import threading
 import time
+from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi import Path as PathParam
@@ -886,16 +890,20 @@ def _chat_alerts(alert_id: int | None) -> list[AlertDetailOwner] | None:
     return alerts
 
 
-def _chat_context(alert_id: int | None) -> tuple[list[AlertDetailOwner], Any, list[dict[str, str]]] | None:
+def _chat_context(alert_id: int | None,
+                  questions: list[str] | None = None) -> tuple[list[AlertDetailOwner], Any, list[dict[str, str]]] | None:
     """(alerts, raw record and web results of the alert asked about) for a chat; None for a missing
     alert. Every role gets the raw record of a focused alert, so the AI can say what
     exactly happened (owner-approved, 2026-10-10): build_chat_context quotes only a
     capped, scrubbed excerpt of it inside the evidence fence. One read, so the quote
     and the alert line always describe the same record. Web results (Brave, only
     with a stored key) are searched for the alert's public identifiers and its one
-    public outside address or domain, never this network's own; see triage.web_search. Runs in a worker thread, so the search never blocks the loop."""
+    public outside address or domain, never this network's own; see triage.web_search. Runs in a worker thread, so the search never blocks the loop.
+
+    `questions` are the owner's questions in a general chat, newest first (none for a
+    warm-up); see _general_chat_context."""
     if alert_id is None:
-        return _chat_alerts(None) or [], None, []
+        return _general_chat_context(questions or [])
     detail = db.get_alert(alert_id)
     if detail is None:
         return None
@@ -903,9 +911,106 @@ def _chat_context(alert_id: int | None) -> tuple[list[AlertDetailOwner], Any, li
     return [AlertDetailOwner.from_detail(detail)], detail.raw, results_for(detail)
 
 
+# A general chat question that points at one alert brings that alert's evidence and
+# searches along (owner-approved, 2026-10-12). Matched by code, never by the model.
+MATCH_RECENT_ALERTS = 200
+# A follow-up ("who is behind it?") names nothing, so earlier questions are tried too.
+MATCH_EARLIER_QUESTIONS = 3
+_ALERT_NUMBER = re.compile(r"(?:\balert\s*(?:#|no\.?\s*|number\s*)?|#)(\d{1,9})\b", re.IGNORECASE)
+_LATEST_ALERT = re.compile(r"\b(?:latest|last|newest|most recent|recent)\s+(?:alert|warning|event)\b", re.IGNORECASE)
+_DOTTED_NAME = re.compile(r"(?=.{4,100}$)(?:[a-z0-9-]+\.)+[a-z]{2,24}")
+_MATCH_WORD = re.compile(r"[a-z0-9][a-z0-9-]{2,}")
+# Words too common in questions or alert titles to say which alert is meant.
+_MATCH_STOPWORDS = frozenset("""
+the and for you your are was were why how who what when where which this that these those there their they them
+has have had any can could would should did does doing get got not see new its our all one out now ask about
+from with into just been being some something thing anything happened happen happening mean means meaning tell
+explain please alert alerts warning event events network device devices computer laptop security safe okay
+detected possible potential observed attempt attempted activity suspicious inbound outbound request response
+traffic query windows policy info information user users look looks like know need help still again also more
+""".split())
+
+
+def _match_words(text: str) -> set[str]:
+    return set(_MATCH_WORD.findall(text.lower())) - _MATCH_STOPWORDS
+
+
+def _named_alert_id(question: str, recent: list[dict[str, Any]]) -> int | None:
+    """The alert one question is about, by (in order) its number, an address or
+    domain from its record, "the latest alert", or words of its title; None when the
+    question does not single one out."""
+    number = _ALERT_NUMBER.search(question)
+    if number and int(number.group(1)) <= SQLITE_MAX_ID and db.get_alert(int(number.group(1))) is not None:
+        return int(number.group(1))
+    for token in question.split():
+        word = token.strip("\"'`()[]{}<>,;:!?*").rstrip(".").lower()
+        if "://" in word:
+            word = (urlsplit(word).hostname or "").rstrip(".")
+        try:
+            ipaddress.ip_address(word)
+        except ValueError:
+            if not _DOTTED_NAME.fullmatch(word):
+                continue
+        found = db.latest_alert_mentioning(word)
+        if found is not None:
+            return found
+    if _LATEST_ALERT.search(question) and recent:
+        return int(recent[0]["id"])
+    asked = _match_words(question)
+    if not asked:
+        return None
+    # A word found in only one kind of alert ("nmap") singles it out on its own;
+    # otherwise two shared title words are needed. Newest wins a tie.
+    titles = {row["title"] or "" for row in recent}
+    frequency = Counter(word for title in titles for word in _match_words(title))
+    best, best_score = None, 1
+    for row in recent:
+        shared = asked & _match_words(row["title"] or "")
+        score = len(shared) + (1 if any(frequency[word] == 1 for word in shared) else 0)
+        if score > best_score:
+            best, best_score = int(row["id"]), score
+    return best
+
+
+def _private_names() -> list[str]:
+    """Names that belong to this network, which a web search must never carry."""
+    names = [*db.device_names(), *(user["username"] for user in db.users())]
+    names += [platform.node(), os.getenv("COMPUTERNAME", ""), os.getenv("USERNAME", "")]
+    return [name for name in names if name]
+
+
+def _general_chat_context(questions: list[str]) -> tuple[list[AlertDetailOwner], Any, list[dict[str, str]]]:
+    """Context for a general chat: the open alerts, help first. When the question
+    points at one alert, that alert leads the list (A1) with its raw record, as a
+    capped quote like a focused chat's (owner-approved, 2026-10-12). With a Brave key,
+    every question is also searched: its cleaned words, plus the matched alert's own
+    two searches (triage.web_search.results_for_question)."""
+    alerts = _chat_alerts(None) or []
+    if not questions:
+        # A warm-up: nothing has been asked yet, so nothing to match or search.
+        return alerts, None, []
+    detail = None
+    recent = db.list_alerts(limit=MATCH_RECENT_ALERTS)
+    for question in questions[:MATCH_EARLIER_QUESTIONS + 1]:
+        found = _named_alert_id(question, recent)
+        if found is not None:
+            detail = db.get_alert(found)
+            break
+    raw = None
+    if detail is not None:
+        alerts = [AlertDetailOwner.from_detail(detail), *(alert for alert in alerts if alert.id != detail.id)]
+        raw = detail.raw
+    from .web_search import results_for_question
+    return alerts, raw, results_for_question(questions[0], detail, _private_names())
+
+
+def _questions(body: ChatRequest) -> list[str]:
+    return [message.content for message in reversed(body.messages) if message.role == "user"]
+
+
 @app.post("/api/chat", response_model=ChatReply)
 async def chat(body: ChatRequest, user=Depends(require(*ALL_ROLES))) -> ChatReply:
-    context = await asyncio.to_thread(_chat_context, body.alert_id)
+    context = await asyncio.to_thread(_chat_context, body.alert_id, _questions(body))
     if context is None: raise HTTPException(404, "Alert not found")
     alerts, raw, web = context
     # Inference runs in a worker thread inside the model runtime; this await keeps
@@ -925,7 +1030,7 @@ async def chat_stream(body: ChatRequest, user=Depends(require(*ALL_ROLES))) -> S
     the stream never errors, it ends with a "done" event. Starlette cancels the
     generator when the browser disconnects, which stops generation.
     """
-    context = await asyncio.to_thread(_chat_context, body.alert_id)
+    context = await asyncio.to_thread(_chat_context, body.alert_id, _questions(body))
     if context is None: raise HTTPException(404, "Alert not found")
     alerts, raw, web = context
     system = await asyncio.to_thread(_chat_system_prompt)

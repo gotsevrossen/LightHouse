@@ -240,9 +240,91 @@ def test_web_results_go_only_with_the_alert_asked_about(api, client, model, monk
     start, end = context.index(EVIDENCE_OPEN), context.index(EVIDENCE_CLOSE)
     assert start < context.index("WEB-SNIPPET-MARKER") < end
     assert searched == [alert_id]
-    # A general question is never searched: its words are the owner's, not public identifiers.
+
+
+def test_general_questions_search_their_own_words(api, client, model, monkeypatch):
+    """Owner-approved 2026-10-12: every general question is searched too, from its
+    cleaned words; one that names no alert carries no alert search and no raw record."""
+    from triage import web_search
+    asked = []
+    def fake_results(question, detail, private_names):
+        asked.append((question, detail, list(private_names)))
+        return [{"title": "Is my network ok", "url": "https://example.org/q", "snippet": "QUESTION-SNIPPET-MARKER",
+                 "about": "your question"}]
+    monkeypatch.setattr(web_search, "results_for_question", fake_results)
+    seed(api, device="OFFICE-PC-7")
+    token = owner_token(api, client)
     assert ask(client, token, "Is my network ok?").status_code == 200
-    assert searched == [alert_id] and "WEB-SNIPPET-MARKER" not in model.prompt()
+    question, detail, private_names = asked[-1]
+    assert question == "Is my network ok?" and detail is None
+    # This network's own names are handed over so the search can drop them.
+    assert "OFFICE-PC-7" in private_names and "owner1" in private_names
+    context = model.calls[-1]["messages"][0]["content"]
+    start, end = context.index(EVIDENCE_OPEN), context.index(EVIDENCE_CLOSE)
+    assert start < context.index("QUESTION-SNIPPET-MARKER") < end
+    assert RAW_MARKER not in model.prompt()
+
+
+@pytest.mark.parametrize("question", [
+    "What is 192.168.1.25 doing?",
+    "Tell me about the nmap thing",
+    "Explain the latest alert",
+    "What is alert #{id}?",
+])
+def test_general_question_about_one_alert_brings_its_evidence(api, client, model, monkeypatch, question):
+    """A general question code can tie to one alert gets that alert's raw quote, as
+    A1, and its searches (owner-approved, 2026-10-12)."""
+    from triage import web_search
+    matched = []
+    monkeypatch.setattr(web_search, "results_for_question",
+                        lambda question, detail, names: matched.append(detail and detail.id) or [])
+    seed(api, title="Windows Security failed logon", raw={"note": "other record"},
+         timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    alert_id = seed(api)
+    token = owner_token(api, client)
+    assert ask(client, token, question.format(id=alert_id)).status_code == 200
+    assert matched == [alert_id]
+    context = model.calls[-1]["messages"][0]["content"]
+    start, end = context.index(EVIDENCE_OPEN), context.index(EVIDENCE_CLOSE)
+    assert "seems to be about A1" in context[:start]
+    assert start < context.index(RAW_MARKER) < end
+    assert context.index('"ref": "A1"') < context.index("Nmap") < context.index('"ref": "A2"')
+    assert "other record" not in context
+
+
+def test_a_follow_up_keeps_the_alert_an_earlier_question_named(api, client, model, monkeypatch):
+    from triage import web_search
+    matched = []
+    monkeypatch.setattr(web_search, "results_for_question",
+                        lambda question, detail, names: matched.append((question, detail and detail.id)) or [])
+    alert_id = seed(api)
+    token = owner_token(api, client)
+    history = [{"role": "user", "content": "What is the nmap alert?"},
+               {"role": "assistant", "content": "A scan."}]
+    assert ask(client, token, "Who is behind it?", history=history).status_code == 200
+    # The search uses the newest question's words; the alert came from the earlier one.
+    assert matched == [("Who is behind it?", alert_id)]
+
+
+def test_an_unrelated_general_question_names_no_alert(api, client, model, monkeypatch):
+    from triage import web_search
+    matched = []
+    monkeypatch.setattr(web_search, "results_for_question",
+                        lambda question, detail, names: matched.append(detail) or [])
+    seed(api)
+    token = owner_token(api, client)
+    for question in ("Is my network ok?", "What does this mean?", "How do I make a strong password?"):
+        assert ask(client, token, question).status_code == 200
+    assert matched == [None, None, None]
+    assert RAW_MARKER not in model.prompt()
+
+
+def test_warm_up_never_searches(api, client, model, monkeypatch):
+    from triage import web_search
+    monkeypatch.setattr(web_search, "results_for_question", lambda *a: pytest.fail("a warm-up searched"))
+    seed(api)
+    token = owner_token(api, client)
+    assert client.post("/api/chat/warm", headers=auth(token), json={}).status_code == 200
 
 
 def test_provider_says_whether_web_search_is_on(api, client, model, monkeypatch):

@@ -1861,8 +1861,10 @@ function Dashboard({ session, signOut }: { session: Session; signOut: () => Prom
               each question carries a short summary of the related alerts there (plus a
               quote of the alert's sensor record when asking about one). When the
               provider couldn't be checked, it claims neither way. With web search on,
-              "stays on this computer" would be false for alert questions, so it says
-              what is searched instead. */}
+              "stays on this computer" would be false, so it says what is searched
+              instead: every question's own words (cleaned by code, which can't catch
+              everything, hence the warning) and, for an alert, its rule and outside
+              address. */}
           <small>{provider === 'purdue'
             ? 'LightHouse is AI, it can make mistakes. Answers by Purdue GenAI Studio (online): your question and details of the related alerts are sent there. Alert checking stays on this computer.'
             : provider === 'local' && !chatOptions?.webSearch
@@ -1870,7 +1872,7 @@ function Dashboard({ session, signOut }: { session: Session; signOut: () => Prom
             : provider === 'local'
             ? 'LightHouse is AI, it can make mistakes. Answers are written on this computer.'
             : 'LightHouse is AI, it can make mistakes.'}
-            {chatOptions?.webSearch && ' Questions about an alert also search the web (Brave Search) for its rule name and the outside address involved, never your own addresses, devices or names.'}</small>
+            {chatOptions?.webSearch && ' Questions also search the web (Brave Search): your words, minus your own addresses, device names and file paths, so leave out private details. For an alert, its rule name and the outside address involved are searched too.'}</small>
         </div>
       </main>
       {release && <UpdateDialog info={release} onClose={() => setRelease(null)} />}

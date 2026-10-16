@@ -142,14 +142,16 @@ Create the key in GenAI Studio under your avatar → **Settings → Account → 
 
 ### Optional: web search in chat with Brave Search
 
-With a Brave Search API key, a chat question about one alert also gets a few current web results, so the AI can investigate it like a first-line security analyst: what the activity is doing, who is likely behind it and how it works, double-checked against what it finds. This is **off unless you turn it on**, and it works with either the local AI or GenAI Studio.
+With a Brave Search API key, every chat question also gets a few current web results, so the AI can look things up and investigate alerts like a first-line security analyst: what the activity is doing, who is likely behind it and how it works, double-checked against what it finds. This is **off unless you turn it on**, and it works with either the local AI or GenAI Studio.
 
-What gets searched is decided by LightHouse's code, never by the AI, and there are two searches per alert:
+What gets searched is decided by LightHouse's code, never by the AI. For a question about an alert (from the alert's **Ask LightHouse about this** button, or a general question LightHouse can tie to one alert, by its number, an address or domain in it, "the latest alert" or words of its title) there are two searches:
 
 - **The kind of alert**, from public identifiers only: a Windows event ID (*Windows Security event ID 4625*), a Suricata rule's number and name, or a MITRE ATT&CK technique ID (*T1046*).
 - **The outside party**: the one public internet address in the alert (for example the server this computer connected to, or the address that tried to log in), or else a public domain name from the alert's DNS, TLS or HTTP details. This tells Brave which outside address your network dealt with. Private, local and internal addresses and names (192.168.x.x, 10.x.x.x, *.local* and similar) are never searched, and when both ends of a connection are public addresses neither is searched, since one of them is your own.
 
-Your device names, usernames, file paths, command lines and your own question are never searched. General questions (not about one alert) don't search at all. An attacker can influence which outside address gets searched and what pages say about it, so results are treated like any other untrusted data: they can't lower an alert's severity, and the AI is told they're public pages that may be wrong. While it's on, the chat box's footer says so.
+**General chats** also search your question's own words, on every question. LightHouse's code first removes private and local addresses, e-mail addresses, file paths, document names, internal names, Windows-style computer names and the names it knows are yours (device names in your alerts, LightHouse users, this computer). Free text can't be cleaned perfectly, so anything else you type, such as a client's or person's name, can reach Brave: leave private details out of chat questions while web search is on. When a general question points at one alert, that alert's two searches above run too, and the AI also gets a short quote of that alert's sensor record, as it does when you ask from the alert itself.
+
+For alert searches, your device names, usernames, file paths and command lines are never searched. An attacker can influence which outside address gets searched and what pages say about it, so results are treated like any other untrusted data: they can't lower an alert's severity, and the AI is told they're public pages that may be wrong. While it's on, the chat box's footer says so.
 
 Get a key from [Brave Search API](https://brave.com/search/api/) (check its current plans and terms), then in **PowerShell as administrator**:
 
